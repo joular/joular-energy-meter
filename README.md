@@ -2,6 +2,8 @@
 
 Joular Energy Meter is a desktop application that monitors the power consumption of hardware components, processes and applications, on Windows, Linux, macOS and FreeBSD.
 
+<img src="joularenergymeter.png" width="50%">
+
 Similar to our powerful command-line tool, [PowerJoular](https://github.com/joular/powerjoular), Joular Energy Meter does the energy and CPU usage measuring through two Ada libraries we developed:
 - [Joular Core](https://github.com/joular/joularcore): for CPU and GPU energy and power consumption.
 - [CPU Load](https://github.com/joular/cpuload): for CPU usage for the whole system, a specific PID, and a specific application (all its PIDs).
