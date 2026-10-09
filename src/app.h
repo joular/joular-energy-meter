@@ -274,8 +274,8 @@ char *fmt_span(char *buf, size_t n, double seconds);
 /* -------------------------------------------------------------------------------------- */
 /* The look                                                                  (theme.c)    */
 /* -------------------------------------------------------------------------------------- */
-/* Electricity meter look: grey-green enamel, pale dial plates, dark register with rolling
- * digits (tenths in red), disc edge in a slot. Green/red for Start/Stop, amber for focus.
+/* Electricity meter look: pale teal housing, white dial plates, dark register with rolling
+ * digits (tenths in red), disc edge in a slot. Teal/red for Start/Stop, amber for focus.
  * Colours are named by use. */
 
 typedef enum {

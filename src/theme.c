@@ -20,19 +20,19 @@
  * on the green and red buttons. Series, lamps, control borders and focus ring >= 3:1.
  * Series colours checked for the three types of colour blindness. */
 static const uint32_t palette[TOKEN_COUNT] = {
-    [TOKEN_ENAMEL] = 0xdce2da, [TOKEN_ENAMEL_DEEP] = 0xc6cec4,
-    [TOKEN_PLATE] = 0xf4f5f0, [TOKEN_PLATE_HOVER] = 0xe9ece5, [TOKEN_PLATE_PRESSED] = 0xdde2d9,
-    [TOKEN_EDGE] = 0x6f7972, [TOKEN_GRID] = 0xdfe4dc,
-    [TOKEN_TEXT] = 0x1c2622, [TOKEN_MUTED] = 0x4e5a55, [TOKEN_FAINT] = 0x5a6560, [TOKEN_ERROR] = 0xa82e17,
-    [TOKEN_ACCENT] = 0x29648a,
-    [TOKEN_FOCUS] = 0xa86400, [TOKEN_OFF] = 0x8d978f,
-    [TOKEN_GO] = 0x2f6b4f, [TOKEN_GO_HOVER] = 0x285e45, [TOKEN_GO_PRESSED] = 0x22513b,
+    [TOKEN_ENAMEL] = 0xe1edee, [TOKEN_ENAMEL_DEEP] = 0xc2d8da,
+    [TOKEN_PLATE] = 0xfbfdfd, [TOKEN_PLATE_HOVER] = 0xeef5f6, [TOKEN_PLATE_PRESSED] = 0xe0ecee,
+    [TOKEN_EDGE] = 0x5f7b80, [TOKEN_GRID] = 0xe2ecee,
+    [TOKEN_TEXT] = 0x12292e, [TOKEN_MUTED] = 0x44595e, [TOKEN_FAINT] = 0x506569, [TOKEN_ERROR] = 0xa82e17,
+    [TOKEN_ACCENT] = 0x1a6670,
+    [TOKEN_FOCUS] = 0xa86400, [TOKEN_OFF] = 0x758a8d,
+    [TOKEN_GO] = 0x1f7568, [TOKEN_GO_HOVER] = 0x1a675b, [TOKEN_GO_PRESSED] = 0x15584e,
     [TOKEN_HALT] = 0xc4381f, [TOKEN_HALT_HOVER] = 0xad301a, [TOKEN_HALT_PRESSED] = 0x982a17,
-    [TOKEN_REGISTER] = 0x1a1f1e, [TOKEN_WHEEL] = 0xeef0e8, [TOKEN_WHEEL_LEAD] = 0x8a938e,
-    [TOKEN_DISC] = 0xd3d9d4, [TOKEN_DISC_TICK] = 0x6f7972,
-    [TOKEN_LAMP_OFF] = 0x8d978f, [TOKEN_LAMP_RUN] = 0x1e7d43, [TOKEN_LAMP_WAIT] = 0x9a6a00,
+    [TOKEN_REGISTER] = 0x10262b, [TOKEN_WHEEL] = 0xeef5f5, [TOKEN_WHEEL_LEAD] = 0x81979a,
+    [TOKEN_DISC] = 0xcbdcde, [TOKEN_DISC_TICK] = 0x5f7b80,
+    [TOKEN_LAMP_OFF] = 0x758a8d, [TOKEN_LAMP_RUN] = 0x1e7d43, [TOKEN_LAMP_WAIT] = 0x9a6a00,
     [TOKEN_ALARM] = 0xf6ebc8, [TOKEN_ALARM_EDGE] = 0xd9b55a, [TOKEN_ALARM_TEXT] = 0x4a3500,
-    [TOKEN_TOTAL] = 0x1c2622, [TOKEN_CPU] = 0x2d6a8e, [TOKEN_GPU] = 0x8a6420, [TOKEN_TARGET] = 0x9a2450,
+    [TOKEN_TOTAL] = 0x12292e, [TOKEN_CPU] = 0x2d6a8e, [TOKEN_GPU] = 0x8a6420, [TOKEN_TARGET] = 0x9a2450,
 };
 
 theme_styles styles;
