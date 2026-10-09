@@ -1,0 +1,39 @@
+--  LVGL as a static library from lvgl/, configured by lv_conf.h here. No -Wall
+library project LVGL is
+
+    for Languages use ("C");
+    for Source_Dirs use ("lvgl/src/**");
+    for Object_Dir use "obj/lvgl";
+    for Library_Dir use "lib";
+    for Library_Name use "lvgl";
+    for Library_Kind use "static";
+    for Create_Missing_Dirs use "True";
+
+    --  Unused, and gprbuild can't handle them: the VG-Lite drivers repeat file names (gprbuild needs unique names), and ThorVG's bundled stdint.h and inttypes.h would shadow the system's since gprbuild passes every source folder as an include path
+    for Excluded_Source_Dirs use
+       ("lvgl/src/debugging/vg_lite_tvg",
+        "lvgl/src/libs/thorvg",
+        "lvgl/src/libs/thorvg/rapidjson",
+        "lvgl/src/libs/thorvg/rapidjson/error",
+        "lvgl/src/libs/thorvg/rapidjson/internal",
+        "lvgl/src/libs/thorvg/rapidjson/msinttypes",
+        "lvgl/src/libs/vg_lite_driver",
+        "lvgl/src/libs/vg_lite_driver/VGLite",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gc255/0x40A",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gc355/0x0_1215",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gc355/0x0_1216",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gc555/0x423",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gc555/0x423_ECO",
+        "lvgl/src/libs/vg_lite_driver/VGLite/Series/gcnanoultrav/0x1003",
+        "lvgl/src/libs/vg_lite_driver/VGLiteKernel",
+        "lvgl/src/libs/vg_lite_driver/inc",
+        "lvgl/src/libs/vg_lite_driver/lv_vg_lite_hal");
+
+    package Compiler is
+        --  Log messages give source paths relative to this folder, not the build dir
+        for Switches ("C") use
+            ("-O2", "-DLV_CONF_INCLUDE_SIMPLE", "-I" & LVGL'Project_Dir,
+             "-fmacro-prefix-map=" & LVGL'Project_Dir & "=");
+    end Compiler;
+
+end LVGL;

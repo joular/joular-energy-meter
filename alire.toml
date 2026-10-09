@@ -1,0 +1,57 @@
+name = "joularenergymeter"
+description = "GUI for monitoring the power of platforms, processes and applications"
+version = "0.0.1"
+
+long-description = """
+Joular Energy Meter monitors, in real time, the power consumption of hardware components (CPU, GPU), processes and applications, on Linux, macOS, Windows and FreeBSD.
+It also follows one process or one whole application, and exports power values to CSV files.
+"""
+
+authors = ["Adel Noureddine"]
+maintainers = ["Adel Noureddine <adel.noureddine@outlook.com>"]
+maintainers-logins = ["adelnoureddine"]
+
+tags = ["gui", "lvgl", "power", "energy", "cpu", "gpu", "monitoring", "linux", "windows", "macos", "freebsd"]
+
+licenses = "GPL-3.0-only"
+website = "https://www.noureddine.org/research/joular"
+
+executables = ["joularenergymeter"]
+
+# joularenergymeter.gpr doesn't with a generated config project, same as the sibling crates
+[configuration]
+disabled = true
+
+[[depends-on]]
+joularcore = "~0.0.5"
+cpuload = "~0.0.5"
+
+# System package: alr checks for it, offers to install it and points the compiler at it.
+# No FreeBSD package in Alire, use pkg install sdl2 there
+[[depends-on]]
+[depends-on.'case(os)'.'linux|macos|windows']
+libsdl2 = "*"
+
+[gpr-externals]
+PJ_OS = ["linux", "windows", "macos", "freebsd"]
+
+[gpr-set-externals."case(os)".linux]
+PJ_OS = "linux"
+[gpr-set-externals."case(os)".windows]
+PJ_OS = "windows"
+[gpr-set-externals."case(os)".macos]
+PJ_OS = "macos"
+[gpr-set-externals."case(os)".freebsd]
+PJ_OS = "freebsd"
+
+# Both libraries linked in as static archives with their Ada runtime
+[gpr-set-externals]
+CPULOAD_LIBRARY_TYPE = "static"
+JOULARCORE_LIBRARY_TYPE = "static"
+
+[available.'case(os)']
+linux = true
+windows = true
+macos = true
+freebsd = true
+'...' = false

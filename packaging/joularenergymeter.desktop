@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Joular Energy Meter
+GenericName=Power Meter
+Comment=GUI for monitoring the power consumption of multiple platforms, processes and applications
+Exec=joularenergymeter
+Icon=joularenergymeter
+Terminal=false
+Categories=System;Monitor;
+Keywords=power;energy;watt;joule;RAPL;CPU;GPU;
+StartupWMClass=joularenergymeter

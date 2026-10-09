@@ -1,0 +1,232 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+    tags: [ "*" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+
+jobs:
+
+  # Each job sets up the machine and runs the script for its system in packaging/, which builds, checks the program (--version and --help, no display needed) and makes the packages and installers in dist/. One artifact per job holds them all.
+  #
+  # LVGL 9.6 sits inside the checkout as in the README. CPU Load and Joular Core come from the Alire index, or are checked out for FreeBSD, which builds without Alire.
+
+  # GNU/Linux on x86_64 and 64-bit Arm (Raspberry Pi with a desktop), each on a native runner.
+  # Ubuntu 22.04 container instead of the 24.04 runner, so the packages only need glibc 2.35 (Debian 12, Ubuntu 22.04, Fedora 36 and newer).
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    # SDL2 installed here, no sudo in the container for Alire to use
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+    - name: Prepare the container
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends ca-certificates curl unzip git build-essential file \
+          libsdl2-dev rpm libarchive-tools zstd
+
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Checkout LVGL
+      uses: actions/checkout@v7
+      with:
+        repository: lvgl/lvgl
+        ref: 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579  # release/v9.6, as tested
+        path: lvgl
+
+    # setup-alire uses the runner path (/home/runner/work), mounted at /__w in the container
+    - name: Let the runner's action paths resolve inside the container
+      run: |
+        mkdir -p /home/runner
+        ln -sfn /__w /home/runner/work
+
+    # Alire brings the GNAT toolchain
+    - name: Set up Alire
+      uses: alire-project/setup-alire@v6
+
+    # tar.gz, .deb, .rpm, Arch Linux package and AppImage
+    - name: Build and package
+      run: packaging/linux.sh
+
+    - name: Upload the packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: joularenergymeter-linux-${{ matrix.arch }}
+        path: dist/*
+        if-no-files-found: error
+
+  # macOS, one runner per chip, then one universal app (macos-app below). Linked against SDL's SDL2.framework, which goes inside the app, so users need no Homebrew.
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+
+          - arch: x86_64
+            runner: macos-15-intel
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Checkout LVGL
+      uses: actions/checkout@v7
+      with:
+        repository: lvgl/lvgl
+        ref: 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579  # release/v9.6, as tested
+        path: lvgl
+
+    # Only for Alire's check of the libsdl2 dependency, the program links SDL2.framework
+    - name: Install SDL2
+      run: brew install sdl2
+
+    # Alire picks PJ_OS=macos itself
+    - name: Set up Alire
+      uses: alire-project/setup-alire@v6
+
+    - name: Build
+      run: packaging/macos.sh build
+
+    - name: Upload the binary for the app
+      uses: actions/upload-artifact@v7
+      with:
+        name: macos-binary-${{ matrix.arch }}
+        path: bin/app/joularenergymeter
+        retention-days: 1
+        if-no-files-found: error
+
+  # Both binaries merged into one universal app, in a zip and a disk image
+  macos-app:
+    name: macOS app
+    needs: macos
+    runs-on: macos-15
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Checkout LVGL's licence
+      uses: actions/checkout@v7
+      with:
+        repository: lvgl/lvgl
+        ref: 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579  # release/v9.6, as tested
+        path: lvgl
+        sparse-checkout: LICENCE.txt
+        sparse-checkout-cone-mode: false
+
+    - name: Download the binaries
+      uses: actions/download-artifact@v8
+      with:
+        pattern: macos-binary-*
+
+    - name: Package
+      run: packaging/macos.sh package macos-binary-arm64/joularenergymeter macos-binary-x86_64/joularenergymeter
+
+    - name: Upload the packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: joularenergymeter-macos-universal
+        path: dist/*
+        if-no-files-found: error
+
+  # Windows, 64 bits: zip and MSI installer. Alire installs MSYS2 and SDL2 in it for the build. The packages ship SDL's own SDL2.dll. The runner has the .NET SDK for WiX.
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Checkout LVGL
+      uses: actions/checkout@v7
+      with:
+        repository: lvgl/lvgl
+        ref: 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579  # release/v9.6, as tested
+        path: lvgl
+
+    - name: Set up Alire
+      uses: alire-project/setup-alire@v6
+
+    - name: Build and package
+      shell: pwsh
+      run: packaging/windows.ps1
+
+    - name: Upload the packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: joularenergymeter-windows-x64
+        path: dist/*
+        if-no-files-found: error
+
+  # FreeBSD in a VM, GitHub has no FreeBSD runners. amd64 only, RAPL is x86 only.
+  # Latest FreeBSD 14, so the program runs on 15 too. GNAT 15 or newer: GNAT 12, which gprbuild pulls in, crashes on Joular Core's cpuctl code. gprbuild only, Alire has no FreeBSD SDL2.
+  freebsd:
+    name: FreeBSD amd64
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Checkout LVGL
+      uses: actions/checkout@v7
+      with:
+        repository: lvgl/lvgl
+        ref: 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579  # release/v9.6, as tested
+        path: lvgl
+
+    # In deps/ inside the checkout, which is what the VM sees
+    - name: Checkout CPU Load
+      uses: actions/checkout@v7
+      with:
+        repository: joular/cpuload
+        ref: "0.0.5"
+        path: deps/cpuload
+
+    - name: Checkout Joular Core
+      uses: actions/checkout@v7
+      with:
+        repository: joular/joularcore
+        ref: "0.0.5"
+        path: deps/joularcore
+
+    # tar.gz and pkg package, copied back from the VM
+    - name: Build and package in FreeBSD
+      uses: vmactions/freebsd-vm@v1
+      with:
+        release: "14"
+        prepare: pkg install -y gprbuild gnat15 sdl2
+        run: |
+          export PATH=/usr/local/gnat15/bin:$PATH
+          LIBS=deps sh packaging/freebsd.sh
+
+    - name: Upload the packages
+      uses: actions/upload-artifact@v7
+      with:
+        name: joularenergymeter-freebsd-amd64
+        path: dist/*
+        if-no-files-found: error

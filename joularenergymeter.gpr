@@ -1,0 +1,103 @@
+with "lvgl.gpr";
+with "joularcore.gpr";
+with "cpuload.gpr";
+
+--  C program on two Ada libraries. gprbuild binds their Ada closure (main.c calls adainit) and links the Ada runtime in, so the binary doesn't need GNAT installed
+project Joularenergymeter is
+
+    --  OS from gprbuild's target, -XPJ_OS overrides it
+    Host_Target := project'Target;
+
+    Default_OS := "linux";
+    case Host_Target is
+        when "aarch64-darwin" | "arm64-darwin" | "x86_64-darwin" | "i686-darwin"
+           | "x86-darwin" | "arm-darwin" | "ppc-darwin"
+            => Default_OS := "macos";
+        when "x86_64-windows64" | "x86_64-windows" | "aarch64-windows64"
+           | "i686-windows" | "x86-windows"
+            => Default_OS := "windows";
+        when "x86_64-freebsd" | "aarch64-freebsd"
+            => Default_OS := "freebsd";
+        when others
+            => Default_OS := "linux";
+    end case;
+
+    --  Windows sets OS=Windows_NT, for target names not listed above
+    Host_OS := external ("OS", "");
+
+    case Host_OS is
+        when "Windows_NT"
+            => Default_OS := "windows";
+        when others
+            => null;
+    end case;
+
+    type OS_Platform is ("linux", "windows", "macos", "freebsd");
+    PJ_OS : OS_Platform := external ("PJ_OS", Default_OS);
+
+    --  SDL2 is found through Alire's environment: system folders on Linux, Homebrew on macOS, msys2 on Windows. FreeBSD's pkg puts it in /usr/local, set here.
+    --  Otherwise, or for a static SDL2, pass -XSDL2_CFLAGS="-I<folder>" -XSDL2_LIBS="-L<folder> -lSDL2" (plus what
+    --  pkg-config --static --libs sdl2 lists).
+    Default_SDL2_Cflags := "";
+    Default_SDL2_Libs := "-lSDL2";
+    Defines := ("-DPJ_LINUX");
+    OS_Libs := ();
+
+    case PJ_OS is
+        when "macos" =>
+            Defines := ("-DPJ_MACOS");
+            --  No default rpaths into build folders or the toolchain. Homebrew's SDL2 loads SDL3 by name and dyld would also search the current folder, as root under sudo, so Homebrew's folders go first.
+            --  IOKit keeps the machine awake while measuring. dead_strip drops unused code, about a third of the binary.
+            OS_Libs := ("-nodefaultrpaths", "-Wl,-dead_strip",
+                        "-Wl,-dyld_env,DYLD_LIBRARY_PATH=/opt/homebrew/opt/sdl3/lib:/usr/local/opt/sdl3/lib",
+                        "-framework", "IOKit", "-framework", "CoreFoundation");
+        when "windows" =>
+            --  GUI subsystem so no console opens; SDL2main provides WinMain
+            Default_SDL2_Libs := "-lmingw32 -lSDL2main -lSDL2 -mwindows";
+            Defines := ("-DPJ_WINDOWS");
+        when "linux" =>
+            --  glibc has round, ceil, lround and fmax in libm, nothing else links it
+            OS_Libs := ("-lm");
+        when "freebsd" =>
+            Default_SDL2_Cflags := "-I/usr/local/include";
+            Default_SDL2_Libs := "-L/usr/local/lib -lSDL2";
+            Defines := ("-DPJ_FREEBSD");
+            OS_Libs := ("-lm");
+    end case;
+
+    Include_Switches := ("-I" & Joularenergymeter'Project_Dir,
+                         "-I" & Joularcore'Project_Dir & "include",
+                         "-I" & CpuLoad'Project_Dir & "include")
+                        & Split (external ("SDL2_CFLAGS", Default_SDL2_Cflags), " ");
+
+    Link_Switches := ("-static-libgcc") & Split (external ("SDL2_LIBS", Default_SDL2_Libs), " ") & OS_Libs;
+
+    for Languages use ("C");
+    for Source_Dirs use ("src", "src/fonts", "src/images");
+    for Object_Dir use "obj";
+    for Exec_Dir use "bin";
+    for Create_Missing_Dirs use "True";
+    for Main use ("main.c");
+    --  LVGL and the Ada libraries are static, no run path into build folders
+    for Run_Path_Option use ();
+
+    package Builder is
+        for Executable ("main.c") use "joularenergymeter";
+    end Builder;
+
+    package Compiler is
+        for Switches ("C") use
+            ("-O2", "-std=gnu11", "-Wall", "-Wextra", "-DLV_CONF_INCLUDE_SIMPLE")
+            & Defines & Include_Switches;
+    end Compiler;
+
+    package Binder is
+        --  Static Ada runtime, so it runs without GNAT installed
+        for Switches ("Ada") use ("-static");
+    end Binder;
+
+    package Linker is
+        for Switches ("C") use Link_Switches;
+    end Linker;
+
+end Joularenergymeter;

@@ -1,0 +1,42 @@
+<!--
+  Windows installer, built by windows.ps1 with WiX 5. Installs for all users in Program Files,
+  with a Start menu shortcut, and is removed from Settings > Apps. Keep the UpgradeCode: it lets
+  a newer version replace an older one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Joular Energy Meter" Manufacturer="Adel Noureddine" Version="$(var.Version)"
+           UpgradeCode="7D05D793-8D6C-4C2F-8BE4-F5DB19E32B63" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="icon.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="icon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://www.noureddine.org/research/joular" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Joular Energy Meter" />
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Files" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Files" Directory="INSTALLFOLDER">
+      <Component>
+        <!-- Starts in Documents: CSV files go to the folder the program starts in -->
+        <File Source="$(var.Files)\joularenergymeter.exe">
+          <Shortcut Name="Joular Energy Meter" Directory="ProgramMenuFolder"
+                    WorkingDirectory="PersonalFolder" Icon="icon.ico" Advertise="yes" />
+        </File>
+      </Component>
+      <Component><File Source="$(var.Files)\SDL2.dll" /></Component>
+      <Component><File Source="$(var.Files)\README-SDL.txt" /></Component>
+      <Component><File Source="$(var.Files)\README.md" /></Component>
+      <Component><File Source="$(var.Files)\LICENSE" /></Component>
+      <Component><File Source="$(var.Files)\LICENCE-LVGL.txt" /></Component>
+      <Component><File Source="$(var.Files)\LICENCE-Barlow.txt" /></Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
