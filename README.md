@@ -1,4 +1,10 @@
-# Joular Energy Meter
+# <a href="https://www.noureddine.org/research/joular/"><img src="https://raw.githubusercontent.com/joular/.github/main/profile/joular.png" alt="Joular Project" width="64" /></a> Joular Energy Meter
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue)](https://www.gnu.org/licenses/gpl-3.0)
+[![C](https://img.shields.io/badge/Made%20with-C-A8B9CC)](https://www.open-std.org/jtc1/sc22/wg14/)
+[![Ada](https://img.shields.io/badge/Made%20with-Ada-blue)](https://www.adaic.org)
+
+![Joular Energy Meter Logo](joular-energymeter.png)
 
 Joular Energy Meter is a desktop application that monitors, in real time, the power and energy consumption of your computer's hardware (CPU and GPU) and of the process or application you choose, on Windows, Linux, macOS and FreeBSD.
 
