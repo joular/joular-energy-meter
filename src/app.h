@@ -255,6 +255,37 @@ const char *csv_file_name(const char *path);
 bool csv_folder_of(const char *file, char *out, size_t n);
 
 /* -------------------------------------------------------------------------------------- */
+/* Carbon intensity of electricity                                           (carbon.c)   */
+/* -------------------------------------------------------------------------------------- */
+/* Grams of CO2 equivalent per kWh, over the life cycle. Countries' yearly averages come from
+ * Ember, in carbon-intensity.csv beside the program (in the app's Resources on macOS) or in
+ * ../share/joularenergymeter, else from the built-in copy. Energy sources are the IPCC's
+ * medians. */
+
+#define CARBON_FILE "carbon-intensity.csv"
+
+typedef struct electricity {
+    char code[4];     /* ISO 3166-1 alpha-3 of a country, "" for the world or a source */
+    char name[48];
+    int year;         /* of a country's average, 0 for a source */
+    double grams;     /* per kWh */
+} electricity;
+
+/* Once, before the others */
+void carbon_load(void);
+
+/* World first, then the countries by name */
+int carbon_country_count(void);
+const electricity *carbon_country(int i);
+
+/* Country of the time zone (on Windows, of the region setting), else the world */
+int carbon_local_country(void);
+
+/* From the lowest to the highest */
+int carbon_source_count(void);
+const electricity *carbon_source(int i);
+
+/* -------------------------------------------------------------------------------------- */
 /* Numbers and times as text                                                 (format.c)   */
 /* -------------------------------------------------------------------------------------- */
 /* All write into buf, NUL-terminated and truncated, and return buf */
@@ -485,6 +516,10 @@ void platform_wake(void);
 
 /* Physical per logical pixel: 2.0 on Retina, usually 1.0 */
 float platform_scale(void);
+
+/* Folder of the program with a trailing separator, the app's Resources on macOS; "" if
+ * unknown */
+const char *platform_program_folder(void);
 
 void platform_set_clipboard(const char *text);
 

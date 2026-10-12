@@ -429,6 +429,15 @@ float platform_scale(void)
 /* The rest of the system                                                                 */
 /* -------------------------------------------------------------------------------------- */
 
+/* Asked once, never freed */
+const char *platform_program_folder(void)
+{
+    static char *folder;
+
+    if (folder == NULL) folder = SDL_GetBasePath();
+    return folder ? folder : "";
+}
+
 void platform_set_clipboard(const char *text)
 {
     if (SDL_SetClipboardText(text) != 0) sdl_error("clipboard");

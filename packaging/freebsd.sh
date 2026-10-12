@@ -35,17 +35,18 @@ fi
 # tar.gz
 TARBALL="$NAME-$VERSION-freebsd$RELEASE-$ARCH"
 mkdir -p "$WORK/$TARBALL"
-cp "bin/$NAME" "$WORK/$TARBALL/"
+cp "bin/$NAME" data/carbon-intensity.csv "$WORK/$TARBALL/"
 docs "$WORK/$TARBALL"
 tar -czf "$DIST/$TARBALL.tar.gz" -C "$WORK" "$TARBALL"
 
 # Package: files under /usr/local, SDL2 as a dependency
 STAGE="$WORK/root"
 install -d "$STAGE/usr/local/bin" "$STAGE/usr/local/share/applications" \
-    "$STAGE/usr/local/share/icons/hicolor/512x512/apps"
+    "$STAGE/usr/local/share/icons/hicolor/512x512/apps" "$STAGE/usr/local/share/$NAME"
 install -m 755 "bin/$NAME" "$STAGE/usr/local/bin/"
 install -m 644 "$HERE/$NAME.desktop" "$STAGE/usr/local/share/applications/"
 install -m 644 assets/icon.png "$STAGE/usr/local/share/icons/hicolor/512x512/apps/$NAME.png"
+install -m 644 data/carbon-intensity.csv "$STAGE/usr/local/share/$NAME/"
 docs "$STAGE/usr/local/share/doc/$NAME"
 
 cat > "$WORK/+MANIFEST" << EOF

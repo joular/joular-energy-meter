@@ -33,6 +33,7 @@
       </Component>
       <Component><File Source="$(var.Files)\SDL2.dll" /></Component>
       <Component><File Source="$(var.Files)\README-SDL.txt" /></Component>
+      <Component><File Source="$(var.Files)\carbon-intensity.csv" /></Component>
       <Component><File Source="$(var.Files)\README.md" /></Component>
       <Component><File Source="$(var.Files)\LICENSE" /></Component>
       <Component><File Source="$(var.Files)\LICENCE-LVGL.txt" /></Component>

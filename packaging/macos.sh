@@ -62,7 +62,7 @@ package() {
     ditto "$FRAMEWORKS/SDL2.framework" "$APP/Contents/Frameworks/SDL2.framework"
     sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
     plutil -lint "$APP/Contents/Info.plist"
-    cp assets/icon.icns "$APP/Contents/Resources/"
+    cp assets/icon.icns data/carbon-intensity.csv "$APP/Contents/Resources/"
     docs "$APP/Contents/Resources"
 
     # SDL2.framework keeps SDL's own signature

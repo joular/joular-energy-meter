@@ -37,13 +37,14 @@ STAGE="$WORK/root"
 install -D -m 755 "bin/$NAME" "$STAGE/usr/bin/$NAME"
 install -D -m 644 "$HERE/$NAME.desktop" "$STAGE/usr/share/applications/$NAME.desktop"
 install -D -m 644 assets/icon.png "$STAGE/usr/share/icons/hicolor/512x512/apps/$NAME.png"
+install -D -m 644 data/carbon-intensity.csv "$STAGE/usr/share/$NAME/carbon-intensity.csv"
 docs "$STAGE/usr/share/doc/$NAME"
 SIZE_KB=$(du -sk "$STAGE" | cut -f1)
 
 # tar.gz (keeps the executable bit, which zip files lose)
 TARBALL="$NAME-$VERSION-linux-$ARCH-glibc$GLIBC"
 mkdir -p "$WORK/$TARBALL"
-cp "bin/$NAME" "$WORK/$TARBALL/"
+cp "bin/$NAME" data/carbon-intensity.csv "$WORK/$TARBALL/"
 docs "$WORK/$TARBALL"
 tar -czf "$DIST/$TARBALL.tar.gz" -C "$WORK" "$TARBALL"
 
@@ -91,6 +92,7 @@ cp -R "$STAGE/." %{buildroot}/
 /usr/bin/$NAME
 /usr/share/applications/$NAME.desktop
 /usr/share/icons/hicolor/512x512/apps/$NAME.png
+/usr/share/$NAME
 /usr/share/doc/$NAME
 EOF
 rpmbuild -bb --quiet \
@@ -142,6 +144,7 @@ if [ ! -x "$LINUXDEPLOY" ]; then
     chmod +x "$LINUXDEPLOY"
 fi
 cp assets/icon.png "$WORK/$NAME.png"
+install -D -m 644 data/carbon-intensity.csv "$WORK/AppDir/usr/share/$NAME/carbon-intensity.csv"
 (
     cd "$WORK"
     APPIMAGE_EXTRACT_AND_RUN=1 LINUXDEPLOY_OUTPUT_VERSION="$VERSION" "$LINUXDEPLOY" \

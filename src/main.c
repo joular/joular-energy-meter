@@ -101,6 +101,7 @@ int main(int argc, char *argv[])
         status = 1;
     } else {
         theme_init(lv_display_get_default());
+        carbon_load();
         ui_build();
         status = platform_run(sampler_deliver);
 

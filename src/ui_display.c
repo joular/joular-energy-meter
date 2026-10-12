@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -36,7 +37,7 @@ static const theme_token pen[] = { TOKEN_TOTAL, TOKEN_CPU, TOKEN_GPU, TOKEN_TARG
 #define SINCE_WIDTH 88
 
 /* Reading rows: name, value now, energy since start */
-enum { ROW_CPU, ROW_GPU, ROW_LOAD, ROW_TARGET, ROW_SHARE, ROW_TOTAL_SHARE, ROW_COUNT };
+enum { ROW_CPU, ROW_GPU, ROW_LOAD, ROW_TARGET, ROW_SHARE, ROW_TOTAL_SHARE, ROW_CARBON, ROW_TARGET_CARBON, ROW_COUNT };
 
 typedef struct row {
     lv_obj_t *box, *name, *now, *since;
@@ -55,6 +56,14 @@ static const char *const stat_names[STAT_COUNT] = {
     "Average", "Standard deviation", "Highest", "Lowest", "A year at this average", "Measurements",
 };
 static lv_obj_t *session_panel, *stat_name[STAT_COUNT], *stat_value[STAT_COUNT];
+
+/* Electricity the emissions are counted for: a country's average, one energy source, or a
+ * typed value. Emissions are worked out again from the last measurement when it changes. */
+enum { MIX_COUNTRY, MIX_SOURCE, MIX_OWN };
+static lv_obj_t *carbon_panel, *mix_kind, *mix_country, *mix_source, *mix_own, *mix_own_unit, *mix_note;
+static double grams_per_kwh;   /* negative when no value is typed */
+static cycle last_cycle;
+static totals last_sum;
 
 /* Machine power over the session: mean and Welford's running sum of squares, highest and
  * lowest with their times, and the count of dropped or failed measurements */
@@ -229,11 +238,13 @@ static void show_load(lv_obj_t *label, double load)
     show_figure(label, load >= 0.0 ? fmt_number(text, sizeof text, 100.0 * load, 1) : NULL, "%");
 }
 
+static const char *const joule_units[] = { "J", "kJ", "MJ", "GJ" };
+static const char *const gram_units[] = { "mg", "g", "kg", "t" };
+
 /* At most three digits before the point and four in all, so a long session's total fits its
- * column and keeps the same precision */
-static void show_joules(lv_obj_t *label, double value, bool available)
+ * column and keeps the same precision. Each unit is 1000 of the one before. */
+static void show_scaled(lv_obj_t *label, double value, const char *const units[4], bool available)
 {
-    static const char *const units[] = { "J", "kJ", "MJ", "GJ" };
     char number[32];
     int unit = 0;
 
@@ -244,6 +255,32 @@ static void show_joules(lv_obj_t *label, double value, bool available)
     }
     show_figure(label, available ? fmt_number(number, sizeof number, value, value < 9.9995 ? 3 : value < 99.995 ? 2 : 1)
                                  : NULL, units[unit]);
+}
+
+/* Three figures, as mg/h would not fit the column; kg/h from 1000 g/h */
+static void show_rate(lv_obj_t *label, double grams_an_hour, bool available)
+{
+    char number[32];
+    bool kilos = grams_an_hour >= 999.5;
+    double value = kilos ? grams_an_hour / 1000.0 : grams_an_hour;
+
+    show_figure(label, available ? fmt_number(number, sizeof number, value, value < 9.995 ? 2 : value < 99.95 ? 1 : 0)
+                                 : NULL, kilos ? "kg/h" : "g/h");
+}
+
+/* Watts and joules to CO2e for the chosen electricity, from the last measurement */
+static void show_carbon(void)
+{
+    bool known = grams_per_kwh >= 0.0 && samples > 0, has_power = has_cpu || has_gpu;
+    /* g an hour per W, and mg per J */
+    double hourly = grams_per_kwh / 1000.0, per_joule = grams_per_kwh / 3600.0;
+
+    show_rate(rows[ROW_CARBON].now, last_cycle.total_power * hourly, known && has_power);
+    show_scaled(rows[ROW_CARBON].since, last_sum.total_energy * per_joule, gram_units, known && has_power);
+    show_rate(rows[ROW_TARGET_CARBON].now, last_cycle.target_power * hourly,
+              known && has_cpu && last_cycle.target_power >= 0.0);
+    show_scaled(rows[ROW_TARGET_CARBON].since, last_sum.target_energy * per_joule, gram_units,
+                known && has_cpu && last_sum.target_read);
 }
 
 /* Joules to the tenth on six wheels plus the red one, then kJ and so on. Wheels roll only
@@ -420,8 +457,9 @@ static void show_gpu(bool shown)
 static void show_hardware(void)
 {
     show_gpu(has_gpu);
-    /* No power, no session stats */
+    /* No power, no session stats or emissions */
     kit_show(session_panel, has_cpu || has_gpu);
+    kit_show(carbon_panel, has_cpu || has_gpu);
 
     if (!load_reads)
         show_alarm("CPU load cannot be read on this machine.",
@@ -540,10 +578,10 @@ static void show_cycle(const cycle *data, const totals *sum, int64_t taken)
     show_load(rows[ROW_LOAD].now, data->cpu_usage);
     show_load(rows[ROW_SHARE].now, data->target_usage);
 
-    show_joules(rows[ROW_CPU].since, sum->cpu_energy, has_cpu);
-    show_joules(rows[ROW_GPU].since, sum->gpu_energy, has_gpu);
+    show_scaled(rows[ROW_CPU].since, sum->cpu_energy, joule_units, has_cpu);
+    show_scaled(rows[ROW_GPU].since, sum->gpu_energy, joule_units, has_gpu);
     /* Target never read: no energy rather than zero */
-    show_joules(rows[ROW_TARGET].since, sum->target_energy, has_cpu && sum->target_read);
+    show_scaled(rows[ROW_TARGET].since, sum->target_energy, joule_units, has_cpu && sum->target_read);
     /* Program's share of the machine, power now and energy since start */
     show_figure(rows[ROW_TOTAL_SHARE].now,
                 has_cpu && data->target_power >= 0.0 && data->total_power > 0.0
@@ -551,6 +589,10 @@ static void show_cycle(const cycle *data, const totals *sum, int64_t taken)
     show_figure(rows[ROW_TOTAL_SHARE].since,
                 has_cpu && sum->target_read && sum->total_energy > 0.0
                     ? fmt_number(text, sizeof text, 100.0 * sum->target_energy / sum->total_energy, 1) : NULL, "%");
+
+    last_cycle = *data;
+    last_sum = *sum;
+    show_carbon();
 
     kit_set_text(clock_label, fmt_clock(text, sizeof text, sum->elapsed));
     show_split(data, has_power);
@@ -579,6 +621,8 @@ static void clear_readings(void)
     kit_set_text(rows[ROW_GPU].since, NOTHING);
     kit_set_text(rows[ROW_TARGET].since, NOTHING);
     kit_set_text(rows[ROW_TOTAL_SHARE].since, NOTHING);
+    kit_set_text(rows[ROW_CARBON].since, NOTHING);
+    kit_set_text(rows[ROW_TARGET_CARBON].since, NOTHING);
     for (int i = 0; i < STAT_COUNT; i++) {
         kit_set_text(stat_name[i], stat_names[i]);
         kit_set_text(stat_value[i], NOTHING);
@@ -889,6 +933,132 @@ static void build_rows(lv_obj_t *column)
     new_row(body, ROW_TOTAL_SHARE, -1, "Share of total");
 }
 
+static int32_t width_of(const char *text, const lv_font_t *font)
+{
+    lv_point_t size;
+
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return size.x;
+}
+
+/* The closed picker doesn't cut its text, so a long name is shortened with an ellipsis */
+static void fit_name(lv_obj_t *picker)
+{
+    char name[64];
+    const lv_font_t *font = lv_obj_get_style_text_font(picker, LV_PART_MAIN);
+    size_t len;
+
+    lv_obj_update_layout(picker);
+    int32_t room = lv_obj_get_content_width(picker) - ui_px(6)
+                   - width_of(LV_SYMBOL_DOWN, lv_obj_get_style_text_font(picker, LV_PART_INDICATOR));
+
+    lv_dropdown_get_selected_str(picker, name, sizeof name - 4);
+    if (width_of(name, font) <= room) {
+        lv_dropdown_set_text(picker, NULL);
+        return;
+    }
+    /* Back a whole UTF-8 letter at a time (continuation bytes are 10xxxxxx), then drop a
+     * trailing space */
+    room -= width_of("…", font);
+    len = strlen(name);
+    while (len > 0 && width_of(name, font) > room) {
+        do len--;
+        while (len > 0 && ((unsigned char)name[len] & 0xC0) == 0x80);
+        name[len] = '\0';
+    }
+    while (len > 0 && name[len - 1] == ' ') len--;
+    strcpy(name + len, "…");
+    lv_dropdown_set_text(picker, name);
+}
+
+/* The chosen electricity's grams per kWh, its control and its note */
+static void show_mix(void)
+{
+    uint32_t kind = lv_dropdown_get_selected(mix_kind);
+    const electricity *e = kind == MIX_COUNTRY  ? carbon_country((int)lv_dropdown_get_selected(mix_country))
+                           : kind == MIX_SOURCE ? carbon_source((int)lv_dropdown_get_selected(mix_source))
+                                                : NULL;
+    const char *typed = lv_textarea_get_text(mix_own);
+    char number[16];
+
+    kit_show(mix_country, kind == MIX_COUNTRY);
+    kit_show(mix_source, kind == MIX_SOURCE);
+    kit_show(mix_own, kind == MIX_OWN);
+    kit_show(mix_own_unit, kind == MIX_OWN);
+    if (e == NULL) {
+        grams_per_kwh = typed[0] ? atof(typed) : -1.0;
+        kit_set_text(mix_note, "Your own value, in g CO2e per kWh");
+        return;
+    }
+    grams_per_kwh = e->grams;
+    fmt_number(number, sizeof number, e->grams, 0);
+    if (e->year > 0)
+        lv_label_set_text_fmt(mix_note, "%s g CO2e per kWh, the %d average (Ember)", number, e->year);
+    else
+        lv_label_set_text_fmt(mix_note, "%s g CO2e per kWh over the life cycle (IPCC)", number);
+    fit_name(kind == MIX_COUNTRY ? mix_country : mix_source);
+}
+
+static void on_mix_changed(lv_event_t *e)
+{
+    /* A value to type starts from the one shown */
+    if (lv_event_get_target(e) == mix_kind && lv_dropdown_get_selected(mix_kind) == MIX_OWN
+        && lv_textarea_get_text(mix_own)[0] == '\0' && grams_per_kwh >= 0.0) {
+        char number[16];
+        lv_textarea_set_text(mix_own, fmt_number(number, sizeof number, grams_per_kwh, 0));
+    }
+    show_mix();
+    if (samples > 0) show_carbon();
+}
+
+/* Names, one per line */
+static const char *names_of(const electricity *(*get)(int), int count, char *buf, size_t n)
+{
+    size_t used = 0;
+
+    buf[0] = '\0';
+    for (int i = 0; i < count && used < n; i++)
+        used += (size_t)snprintf(buf + used, n - used, "%s%s", i ? "\n" : "", get(i)->name);
+    return buf;
+}
+
+/* Emissions of the machine and of the followed program, and the electricity they run on */
+static void build_carbon(lv_obj_t *column)
+{
+    /* Up to 300 names of 47 bytes */
+    static char names[16 * 1024];
+    lv_obj_t *body = rows_panel(column, "Carbon emissions", "Now", "Since start"), *line;
+
+    carbon_panel = lv_obj_get_parent(body);
+    new_row(body, ROW_CARBON, SERIES_TOTAL, "Whole machine");
+    new_row(body, ROW_TARGET_CARBON, SERIES_TARGET, "");
+
+    line = kit_box(body, false, 8);
+    lv_obj_set_width(line, LV_PCT(100));
+    lv_obj_set_style_pad_top(line, ui_px(10), 0);
+    kit_let_out(line, 4);
+    mix_kind = kit_picker(line, "Country\nEnergy source\nOwn value", MIX_COUNTRY, on_mix_changed, NULL);
+    mix_country = kit_picker(line, names_of(carbon_country, carbon_country_count(), names, sizeof names),
+                             (uint32_t)carbon_local_country(), on_mix_changed, NULL);
+    mix_source = kit_picker(line, names_of(carbon_source, carbon_source_count(), names, sizeof names), 0,
+                            on_mix_changed, NULL);
+    /* Names take what the kind leaves */
+    lv_obj_set_width(mix_country, 0);
+    lv_obj_set_flex_grow(mix_country, 1);
+    lv_obj_set_width(mix_source, 0);
+    lv_obj_set_flex_grow(mix_source, 1);
+    mix_own = kit_entry(line, "", true);
+    lv_obj_set_width(mix_own, ui_px(64));
+    lv_textarea_set_max_length(mix_own, 4);
+    lv_obj_add_event_cb(mix_own, on_mix_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    mix_own_unit = kit_label(line, "g/kWh", TEXT_WORD);
+
+    mix_note = kit_lines(kit_label(body, "", TEXT_CAPTION), 2);
+    lv_obj_set_width(mix_note, LV_PCT(100));
+    lv_obj_set_style_pad_top(mix_note, ui_px(6), 0);
+    show_mix();
+}
+
 /* Session stats in two columns, each under its name */
 static void build_session(lv_obj_t *column)
 {
@@ -1037,9 +1207,11 @@ void display_create(lv_obj_t *left, lv_obj_t *right)
     build_trend(left);
     build_alarm(right);
     build_rows(right);
+    build_carbon(right);
     build_session(right);
 
     kit_show(target_panel, false);
+    kit_show(rows[ROW_TARGET_CARBON].box, false);
     kit_show(second_box, false);
     kit_show(target_key, false);
     show_gpu(false);
@@ -1076,8 +1248,11 @@ void display_start(const target *t)
     lv_label_set_text(lv_obj_get_child(kit_panel_strip(target_panel), 0), name);
     lv_label_set_text(second_name, name);
     lv_label_set_text(target_key_name, name);
+    lv_label_set_text(rows[ROW_TARGET_CARBON].name, name);
     kit_show(target_panel, follows());
+    kit_show(rows[ROW_TARGET_CARBON].box, follows());
     kit_show(session_panel, true);
+    kit_show(carbon_panel, true);
     kit_show(second_box, follows());
     kit_show(target_key, follows());
 

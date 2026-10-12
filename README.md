@@ -12,6 +12,7 @@ Similar to our powerful command-line tool, [PowerJoular](https://github.com/joul
 
 - Monitor CPU, GPU and total power, and the CPU load of the machine and of the process you follow
 - The energy used since the start, on a meter-style counter, plus average, peak and lowest power
+- Carbon emissions, now and since the start, for the electricity of a country, an energy source or your own value
 - A chart of the last 120 measurements (two minutes at 1 s)
 - CSV files in PowerJoular's format, written live or exported from the chart
 - Runs on Linux, Windows, macOS and FreeBSD, and has the same UI and look&feel on all of them
@@ -83,7 +84,7 @@ Alire has no FreeBSD SDL2 package, so this is the only way to build it on FreeBS
 ### :package: Packages and installers
 
 `packaging/` has one script per system. Each builds the program, checks it and makes the packages in `dist/`. The CI runs the same scripts and keeps what they make as artifacts.
-Every package has the program, this README and the licences (GPL, LVGL's MIT, Barlow's OFL).
+Every package has the program, the countries' carbon intensities, this README and the licences (GPL, LVGL's MIT, Barlow's OFL).
 The top of each script lists what it needs.
 
 | System | Run | Makes |
@@ -136,7 +137,7 @@ While measuring, the target and the file are locked, while the measurement inter
 
 - **Meter**: the machine's power, the followed program's power next to it, the energy counter (joules, then kJ and MJ), and a disc that turns with the energy used.
 - **Chart**: the last 120 measurements. **Export** saves them to `joularenergymeter-trend.csv` in the folder the app was started from (the home folder when started from Finder or a menu).
-- **Right column**: processor, graphics and CPU load, now and since the start, with the CPU/GPU split; the followed program's power and its share of the CPU and of the machine; and session figures (average, standard deviation, highest and lowest with their time, a year at the current average, measurements taken and missed).
+- **Right column**: processor, graphics and CPU load, now and since the start, with the CPU/GPU split; the followed program's power and its share of the CPU and of the machine; carbon emissions (below); and session figures (average, standard deviation, highest and lowest with their time, a year at the current average, measurements taken and missed).
 - **Status bar**: the last message. Errors stay highlighted until the next one.
 
 When you follow a process or application, a *second* CSV file is written next to the first (`<file>-<pid>.csv` or `<file>-<name>.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
@@ -144,6 +145,18 @@ When you follow a process or application, a *second* CSV file is written next to
 The interval goes from 250 ms to 10 s. Each cycle is divided by the time it really took, so changing it while measuring is fine. A cycle longer than five intervals and 10 s means the machine slept, and it's dropped. CSV timestamps are whole Unix seconds, as in PowerJoular.
 
 As root, the application only writes to plain files (no links), and files it creates under `sudo` belong to you. While measuring, macOS and Windows don't go to sleep on idle. On Linux, use `systemd-inhibit --what=sleep` for long runs.
+
+## Carbon emissions
+
+The *Carbon emissions* panel turns power into grams of CO2 equivalent an hour, and the energy since the start into grams, for the machine and the followed program. They are counted for:
+
+- **Country**: the country's yearly average carbon intensity, from [Ember's yearly electricity data](https://ember-energy.org/data/yearly-electricity-data/), over the life cycle of the power plants. The country of the time zone is chosen at start (on Windows, the one of the region setting), or the world's average.
+- **Energy source**: electricity from a single source, such as your own solar panels, with the IPCC's life-cycle medians (AR5, the figures Ember uses).
+- **Own value**: your figure in g CO2e per kWh, such as your supplier's.
+
+Changing it works out the emissions again from the last measurement, including after Stop. They are not written to the CSV files, which keep PowerJoular's columns.
+
+The countries' values are read from `carbon-intensity.csv`, beside the program (in the app's *Contents/Resources* on macOS) or in `../share/joularenergymeter/` from it, as the packages install it. Without it, the same values built into the program are used. To update them, run `python3 data/update.py`, which takes Ember's latest data and rewrites `data/carbon-intensity.csv` and its built-in copy `src/carbon_data.c`. Ember adds a new year once a year. An edited file works without a rebuild: one row per country, `ISO 3 code,Area,Year,grams per kWh`.
 
 ## :newspaper: License
 
@@ -158,6 +171,7 @@ Third-party work and dependencies:
 - LVGL, MIT licence, Copyright (c) 2025 LVGL Kft (`lvgl/LICENCE.txt`).
 - Barlow font, SIL Open Font License 1.1, Copyright 2017 The Barlow Project Authors (`src/fonts/OFL.txt`).
 - Montserrat font (built into LVGL), SIL Open Font License 1.1, Copyright 2024 The Montserrat.Git Project Authors.
+- Carbon intensity of electricity by country: Ember, [Yearly Electricity Data](https://ember-energy.org/data/yearly-electricity-data/), CC BY 4.0, latest year of each country (`data/carbon-intensity.csv`).
 - Font Awesome Free 5 symbols (built into LVGL), SIL Open Font License 1.1, Fonticons, Inc.
 
 Author : Prof. Adel Noureddine
