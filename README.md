@@ -1,6 +1,8 @@
 # Joular Energy Meter
 
-Joular Energy Meter is a desktop application that monitors the power consumption of hardware components, processes and applications, on Windows, Linux, macOS and FreeBSD.
+Joular Energy Meter is a desktop application that monitors, in real time, the power and energy consumption of your computer's hardware (CPU and GPU) and of the process or application you choose, on Windows, Linux, macOS and FreeBSD.
+
+It also estimates the carbon emissions of that energy, in grams of CO2 equivalent, now and since the start. They are counted with the carbon intensity of your country's electricity (from [Ember's data](https://ember-energy.org/data/yearly-electricity-data/)), of a single energy source such as solar, or with your own value.
 
 <img src="joularenergymeter.png" width="50%">
 
