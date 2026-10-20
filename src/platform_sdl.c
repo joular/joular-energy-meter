@@ -46,7 +46,7 @@ static struct {
     void *buf;
     lv_indev_t *mouse, *keyboard;
     struct { int32_t x, y; bool pressed, moved; } ptr;
-    struct { uint32_t key; lv_indev_state_t state; } kb;
+    struct { uint32_t key; lv_indev_state_t state; bool space_pressed; } kb;
 } sdl;
 
 static bool sdl_error(const char *what)
@@ -162,10 +162,11 @@ static void type_text(const char *s)
     }
 }
 
-/* True when a text field has focus, Space then types a space */
+/* True when a text field has focus, Space then types a space. The keyboard's group, which is
+ * the file browser's while it is open. */
 static bool typing(void)
 {
-    lv_obj_t *focused = lv_group_get_focused(lv_group_get_default());
+    lv_obj_t *focused = lv_group_get_focused(lv_indev_get_group(sdl.keyboard));
     return focused != NULL && lv_obj_check_type(focused, &lv_textarea_class);
 }
 
@@ -207,16 +208,20 @@ static void key_down(const SDL_Keysym *k)
         return;
     }
     uint32_t key = key_of(k);
+    /* Its SDL_TEXTINPUT comes next, and the press may have moved focus to a field */
+    if (k->sym == SDLK_SPACE) sdl.kb.space_pressed = key == LV_KEY_ENTER;
     if (key) key_send(key);
 }
 
-/* Scroll the nearest object under the pointer that has something to scroll */
+/* Scroll the nearest object under the pointer that has something to scroll. The file browser
+ * and open dropdown lists are on the top layer, above the screen. */
 static void scroll_wheel(float steps)
 {
     lv_point_t p = { sdl.ptr.x, sdl.ptr.y };
+    lv_obj_t *under = lv_indev_search_obj(lv_layer_top(), &p);
 
-    for (lv_obj_t *obj = lv_indev_search_obj(lv_screen_active(), &p); obj != NULL;
-         obj = lv_obj_get_parent(obj)) {
+    if (under == NULL) under = lv_indev_search_obj(lv_screen_active(), &p);
+    for (lv_obj_t *obj = under; obj != NULL; obj = lv_obj_get_parent(obj)) {
         if (lv_obj_is_scrollable(obj)
             && (lv_obj_get_scroll_top(obj) > 0 || lv_obj_get_scroll_bottom(obj) > 0)) {
             lv_obj_scroll_by_bounded(obj, 0, (int32_t)(steps * 40.0f * sdl.scale), LV_ANIM_OFF);
@@ -285,8 +290,8 @@ static bool handle_event(const SDL_Event *e)
         scroll_wheel(e->wheel.preciseY);
         break;
     case SDL_TEXTINPUT:
-        /* Outside a field, Space already pressed the control in key_of */
-        if (strcmp(e->text.text, " ") == 0 && !typing()) break;
+        /* A Space that pressed a control types nothing */
+        if (strcmp(e->text.text, " ") == 0 && sdl.kb.space_pressed) break;
         type_text(e->text.text);
         break;
     case SDL_KEYDOWN:

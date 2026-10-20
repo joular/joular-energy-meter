@@ -1298,24 +1298,33 @@ void display_pause(bool paused)
     ui_message(paused ? "Paused: the time and the energy stop counting." : "Resumed.");
 }
 
-/* No file dialog. Export goes to its own file in the current folder, never the default
- * recording file */
-void display_export(void)
+/* Last export, the next one proposes it again */
+static char export_path[4096] = CSV_EXPORT_FILE;
+
+static void exported(const char *path, void *user_data)
 {
     char second[4200], folder[4096] = "", in[4200] = "";
-    int saved = csv_save_history(CSV_EXPORT_FILE, &session_target);
+    int saved = csv_save_history(path, &session_target);
     const char *word = saved == 1 ? "measurement" : "measurements";
 
-    /* Say the folder, the start folder isn't always obvious */
-    if (saved >= 0 && csv_folder_of(CSV_EXPORT_FILE, folder, sizeof folder))
-        snprintf(in, sizeof in, " in %s", folder);
-    if (saved < 0)
+    LV_UNUSED(user_data);
+    if (saved < 0) {
         warn("%s.", csv_trouble());
-    else if (follows())
-        say("Saved %d %s to %s and %s%s.", saved, word, CSV_EXPORT_FILE,
-            csv_target_file(CSV_EXPORT_FILE, &session_target, second, sizeof second), in);
+        return;
+    }
+    snprintf(export_path, sizeof export_path, "%s", path);
+    if (csv_folder_of(path, folder, sizeof folder))
+        snprintf(in, sizeof in, " in %s", folder);
+    if (follows())
+        say("Saved %d %s to %s and %s%s.", saved, word, csv_file_name(path),
+            csv_file_name(csv_target_file(path, &session_target, second, sizeof second)), in);
     else
-        say("Saved %d %s to %s%s.", saved, word, CSV_EXPORT_FILE, in);
+        say("Saved %d %s to %s%s.", saved, word, csv_file_name(path), in);
+}
+
+void display_export(void)
+{
+    kit_save_csv("Export the trend to", export_path, csv_file_name(export_path), exported);
 }
 
 /* Trend points are one interval apart, as the time labels assume. A running session's trend

@@ -302,3 +302,24 @@ void theme_init(lv_display_t *disp)
     lv_style_set_radius(&styles.scrollbar, LV_RADIUS_CIRCLE);
     lv_style_set_pad_right(&styles.scrollbar, ui_px(3));
 }
+
+/* Selected row as a picked menu option; disabled Choose and messages in the placeholder's
+ * colour, which stays readable as text */
+const file_browser_theme *theme_browser(void)
+{
+    static file_browser_theme t;
+
+    t.backdrop = theme_color(TOKEN_TEXT);
+    t.plate = theme_color(TOKEN_PLATE);
+    t.pressed = theme_color(TOKEN_PLATE_PRESSED);
+    t.edge = theme_color(TOKEN_EDGE);
+    t.text = theme_color(TOKEN_TEXT);
+    t.muted = theme_color(TOKEN_FAINT);
+    t.accent = theme_color(TOKEN_GO);
+    t.accent_text = theme_color(TOKEN_PLATE);
+    t.selection = theme_color(TOKEN_TEXT);
+    t.selection_text = theme_color(TOKEN_PLATE);
+    t.focus = theme_color(TOKEN_FOCUS);
+    t.font = ui_font(14);
+    return &t;
+}

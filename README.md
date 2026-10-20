@@ -138,15 +138,16 @@ CPU load always works. Power reading may need some access depending on each OS, 
 ## :bulb: Usage
 
 The top bar has options to: *Measure* the whole machine, a process (by ID) or an
-application (by name), *every* interval, and optionally *Record to* a CSV file. Press **Start**
+application (by name), *every* interval, and optionally *Record to* a CSV file, typed or chosen with **Browse**. Press **Start**
 (or Enter).
 While measuring, the target and the file are locked, while the measurement interval can still be changed, which restarts the chart.
 **Pause** stops the clock and the energy count until you resume.
 
 - **Meter**: the machine's power, the followed program's power next to it, the energy counter (joules, then kJ and MJ), and a disc that turns with the energy used.
-- **Chart**: the last 120 measurements. **Export** saves them to `joularenergymeter-trend.csv` in the folder the app was started from (the home folder when started from Finder or a menu).
+- **Chart**: the last 120 measurements. **Export** asks where to save them, `joularenergymeter-trend.csv` in the folder the app was started from at first (the home folder when started from Finder or a menu), then the last file exported. It never writes over the files being recorded.
 - **Right column**: processor, graphics and CPU load, now and since the start, with the CPU/GPU split; the followed program's power and its share of the CPU and of the machine; carbon emissions (below); and session figures (average, standard deviation, highest and lowest with their time, a year at the current average, measurements taken and missed).
 - **Status bar**: the last message. Errors stay highlighted until the next one.
+- **File browser** (Browse, Export): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels.
 
 When you follow a process or application, a *second* CSV file is written next to the first (`<file>-<pid>.csv` or `<file>-<name>.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
 

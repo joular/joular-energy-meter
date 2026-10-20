@@ -237,12 +237,37 @@ static int write_file(const char *name, bool of_target)
     return fclose(f) == 0 && ok ? written : -1;
 }
 
+/* Same existing file, one path may be relative or through a link */
+static bool same_file(const char *a, const char *b)
+{
+#ifdef PJ_WINDOWS
+    char x[PATH_MAX], y[PATH_MAX];
+    return _fullpath(x, a, sizeof x) && _fullpath(y, b, sizeof y) && _stricmp(x, y) == 0;
+#else
+    struct stat s, u;
+    return stat(a, &s) == 0 && stat(b, &u) == 0 && s.st_dev == u.st_dev && s.st_ino == u.st_ino;
+#endif
+}
+
+static bool recorded_to(const char *file)
+{
+    return recording && (same_file(file, system_path) || same_file(file, target_path));
+}
+
 int csv_save_history(const char *system_file, const target *t)
 {
     char target_file[sizeof target_path];
     int written;
 
     trouble[0] = '\0';
+    csv_target_file(system_file, t, target_file, sizeof target_file);
+
+    /* Overwriting it would wipe the recording */
+    if (recorded_to(system_file) || recorded_to(target_file)) {
+        snprintf(trouble, sizeof trouble, "%s is being recorded to, choose another file",
+                 csv_file_name(recorded_to(system_file) ? system_file : target_file));
+        return -1;
+    }
 
     written = write_file(system_file, false);
     if (written < 0) {
@@ -250,8 +275,7 @@ int csv_save_history(const char *system_file, const target *t)
         return -1;
     }
 
-    if (t->kind != TARGET_WHOLE_SYSTEM
-        && write_file(csv_target_file(system_file, t, target_file, sizeof target_file), true) < 0) {
+    if (t->kind != TARGET_WHOLE_SYSTEM && write_file(target_file, true) < 0) {
         cannot_write(target_file);
         return -1;
     }
@@ -277,16 +301,17 @@ const char *csv_file_name(const char *path)
 bool csv_folder_of(const char *file, char *out, size_t n)
 {
     char full[PATH_MAX];
-    size_t len;
+    size_t len, root = 1;
 
 #ifdef PJ_WINDOWS
     if (_fullpath(full, file, sizeof full) == NULL) return false;
+    if (full[1] == ':') root = 3;   /* C:\ */
 #else
     if (realpath(file, full) == NULL) return false;
 #endif
     len = (size_t)(csv_file_name(full) - full);
     /* Drop the trailing separator unless it's the root */
-    if (len > 1) len--;
+    if (len > root) len--;
     snprintf(out, n, "%.*s", (int)len, full);
     return true;
 }

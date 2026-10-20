@@ -44,4 +44,6 @@ typedef struct theme_styles {
 
 extern theme_styles styles;
 
+const file_browser_theme *theme_browser(void);
+
 #endif /* JOULAR_ENERGY_METER_THEME_PRIVATE_H */

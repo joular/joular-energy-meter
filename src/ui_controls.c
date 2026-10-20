@@ -16,7 +16,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "app.h"
 #include "theme_private.h"
@@ -25,7 +24,7 @@ LV_IMAGE_DECLARE(joular_logo_1x);
 LV_IMAGE_DECLARE(joular_logo_2x);
 
 static lv_obj_t *kind_picker, *pid_entry, *app_entry, *interval_picker;
-static lv_obj_t *record_switch, *record_name, *path_entry, *recording_note, *problem;
+static lv_obj_t *record_switch, *record_name, *path_entry, *browse_key, *recording_note, *problem;
 static lv_obj_t *lamp, *run_word, *run_key, *pause_key;
 
 /* -------------------------------------------------------------------------------------- */
@@ -93,8 +92,10 @@ static void show_target_kind(void)
 /* Editable only when idle and recording is on */
 static void show_path_enabled(void)
 {
-    kit_enable(path_entry, display_run() == RUN_IDLE
-                           && lv_obj_has_state(record_switch, LV_STATE_CHECKED));
+    bool editable = display_run() == RUN_IDLE && lv_obj_has_state(record_switch, LV_STATE_CHECKED);
+
+    kit_enable(path_entry, editable);
+    kit_enable(browse_key, editable);
 }
 
 static void show_recording_note(void)
@@ -103,7 +104,7 @@ static void show_recording_note(void)
     char folder[PATH_MAX];
 
     if (!csv_is_recording())
-        kit_set_text(recording_note, "Export saves the trend to " CSV_EXPORT_FILE ".");
+        kit_set_text(recording_note, "");
     /* Can't resolve the folder, show the path as typed */
     else if (!csv_folder_of(file, folder, sizeof folder))
         lv_label_set_text_fmt(recording_note, "Writing %s", file);
@@ -151,11 +152,6 @@ static void start_session(void)
             show_problem("That file name is too long. Choose another file.", path_entry);
             return;
         }
-        /* Export overwrites that file, it would wipe the recording */
-        if (strcasecmp(csv_file_name(path), CSV_EXPORT_FILE) == 0) {
-            show_problem("Export writes the trend to " CSV_EXPORT_FILE ". Choose another file.", path_entry);
-            return;
-        }
         if (!csv_start_recording(path[0] ? path : CSV_DEFAULT_FILE, &followed)) {
             char text[sizeof path + 64];
             snprintf(text, sizeof text, "%s. Choose another file.", csv_trouble());
@@ -196,6 +192,24 @@ static void on_interval_changed(lv_event_t *e)
     if (chosen == chosen_interval()) return;
     set_interval(chosen);
     display_interval_changed();
+}
+
+/* Sends VALUE_CHANGED, which clears the problems */
+static void chosen_record_file(const char *path, void *user_data)
+{
+    LV_UNUSED(user_data);
+    lv_textarea_set_text(path_entry, path);
+}
+
+/* Starts where the file typed is, in the current folder for a bare name */
+static void on_browse(lv_event_t *e)
+{
+    char path[4096];
+
+    LV_UNUSED(e);
+    if (!trimmed(lv_textarea_get_text(path_entry), path, sizeof path) || path[0] == '\0')
+        snprintf(path, sizeof path, "%s", CSV_DEFAULT_FILE);
+    kit_save_csv("Choose the file to record to", path, csv_file_name(path), chosen_record_file);
 }
 
 static void on_record_switched(lv_event_t *e)
@@ -278,6 +292,7 @@ static void record_line(lv_obj_t *sentence)
     lv_obj_set_clickable(record_name, true);
     lv_obj_add_event_cb(record_name, on_name_clicked, LV_EVENT_CLICKED, record_switch);
     path_entry = field(line, CSV_DEFAULT_FILE, false, 236);
+    browse_key = kit_button(line, NULL, "Browse", BUTTON_NORMAL, on_browse, NULL);
 
     /* Errors for all fields are shown here, near Start */
     recording_note = kit_lines(kit_label(line, "", TEXT_CAPTION), 2);

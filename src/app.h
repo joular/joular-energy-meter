@@ -28,6 +28,8 @@
 
 #include "lvgl/lvgl.h"
 
+#include "file_browser.h"
+
 /* Keep in sync with alire.toml */
 #define JOULARENERGYMETER_NAME "Joular Energy Meter"
 #define JOULARENERGYMETER_VERSION "0.0.1"
@@ -223,7 +225,7 @@ double history_peak(series s);
 
 #define CSV_DEFAULT_FILE "joularenergymeter-power.csv"
 
-/* For EXPORT, kept apart from the default recording file */
+/* Proposed by Export the first time */
 #define CSV_EXPORT_FILE "joularenergymeter-trend.csv"
 
 /* "<system_file>-<pid>.csv" or "<system_file>-<app>.csv" like PowerJoular; system_file
@@ -242,7 +244,8 @@ bool csv_is_recording(void);
 /* "" when not recording */
 const char *csv_recording_file(void);
 
-/* Overwrites the files with the whole history. Returns rows written, -1 on error. */
+/* Overwrites the files with the whole history, never the files being recorded. Returns rows
+ * written, -1 on error. */
 int csv_save_history(const char *system_file, const target *t);
 
 /* Last write error, with strerror */
@@ -441,6 +444,10 @@ void kit_show(lv_obj_t *obj, bool visible);
 /* Disabled: greyed, ignores mouse and keyboard */
 void kit_enable(lv_obj_t *obj, bool enabled);
 
+/* The file browser in this look, to save a CSV file: start as in file_browser_options, name
+ * proposed. on_choose gets the full path. */
+void kit_save_csv(const char *title, const char *start, const char *name, file_browser_cb on_choose);
+
 /* -------------------------------------------------------------------------------------- */
 /* The window                                                                (ui.c)       */
 /* -------------------------------------------------------------------------------------- */
@@ -481,7 +488,7 @@ void display_start(const target *t);
 void display_stop(void);
 void display_pause(bool paused);
 
-/* Writes the trend to CSV_EXPORT_FILE */
+/* Asks for a file, then writes the trend to it */
 void display_export(void);
 
 /* Call after set_interval: updates the sampler and the trend span */

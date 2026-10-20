@@ -1531,7 +1531,7 @@
 #endif /*LV_USE_TEXTAREA*/
 
 /** Table */
-#define LV_USE_TABLE 0
+#define LV_USE_TABLE 1
 
 /** Tabview */
 #define LV_USE_TABVIEW 0
