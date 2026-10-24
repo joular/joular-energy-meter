@@ -41,11 +41,11 @@ How each hardware component is read is detailed in [Joular Core](https://github.
 
 ## :floppy_disk: Building and compilation
 
-You need SDL2 (2.0.18 or newer) and LVGL 9.6 inside this folder:
+You need SDL2 (2.0.18 or newer) and LVGL 9.6 inside this folder, at the commit of its `release/v9.6` branch that the CI builds against (`.github/workflows/build.yml`):
 
 ```bash
 git clone https://github.com/joular/joular-energy-meter
-cd joular-energy-meter && git clone --depth 1 --branch release/v9.6 https://github.com/lvgl/lvgl.git
+cd joular-energy-meter && git init lvgl && git -C lvgl fetch --depth 1 https://github.com/lvgl/lvgl.git 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579 && git -C lvgl checkout FETCH_HEAD
 ```
 
 ### With Alire
@@ -55,6 +55,8 @@ cd joular-energy-meter && git clone --depth 1 --branch release/v9.6 https://gith
 ```bash
 alr build
 ```
+
+On macOS, `alr build -- -XDev=True` for a build run from this folder: Homebrew's SDL2 loads SDL3 by name, and the switch tells dyld where to find it. The packaged app (below) is built without it, so it looks for nothing outside the app when run with `sudo`.
 
 Alire checks that SDL2 is installed and offers to install it. To install it yourself:
 
@@ -147,11 +149,15 @@ While measuring, the target and the file are locked, while the measurement inter
 - **Chart**: the last 120 measurements. **Export** asks where to save them, `joularenergymeter-trend.csv` in the folder the app was started from at first (the home folder when started from Finder or a menu), then the last file exported. It never writes over the files being recorded.
 - **Right column**: processor, graphics and CPU load, now and since the start, with the CPU/GPU split; the followed program's power and its share of the CPU and of the machine; carbon emissions (below); and session figures (average, standard deviation, highest and lowest with their time, a year at the current average, measurements taken and missed).
 - **Status bar**: the last message. Errors stay highlighted until the next one.
-- **File browser** (Browse, Export): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels.
+- **File browser** (Browse, Export): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels. Export asks before writing over a file that exists.
+
+The followed program's *Power* is its share of the processor's power only: the processor's power times the program's CPU load over the machine's, as PowerJoular counts it; the graphics card isn't attributed. *Share of CPU* is the fraction of the machine's processing capacity it used (all of one core out of eight is 12.5 %), not of the processor's power. *Share of total* divides its power by the machine's CPU + GPU power.
 
 When you follow a process or application, a *second* CSV file is written next to the first (`<file>-<pid>.csv` or `<file>-<name>.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
 
-The interval goes from 250 ms to 10 s. Each cycle is divided by the time it really took, so changing it while measuring is fine. A cycle longer than five intervals and 10 s means the machine slept, and it's dropped. CSV timestamps are whole Unix seconds, as in PowerJoular.
+The interval goes from 1 to 10 s. Each cycle is divided by the time it really took, so changing it while measuring is fine. A cycle during which the machine slept is dropped. CSV timestamps are whole Unix seconds, as in PowerJoular.
+
+From a terminal, `-h` (`--help`) and `-v` (`--version`) print and stop; everything else is chosen in the window.
 
 As root, the application only writes to plain files (no links), and files it creates under `sudo` belong to you. While measuring, macOS and Windows don't go to sleep on idle. On Linux, use `systemd-inhibit --what=sleep` for long runs.
 

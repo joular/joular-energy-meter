@@ -35,6 +35,19 @@ project Joularenergymeter is
     type OS_Platform is ("linux", "windows", "macos", "freebsd");
     PJ_OS : OS_Platform := external ("PJ_OS", Default_OS);
 
+    --  -XDev=True for a build run from this checkout on macOS: Homebrew's SDL2 loads SDL3 by name, and dyld would also search the current folder, as root under sudo, so Homebrew's folders go first.
+    --  Never in a packaged binary, which users run with sudo: with no dyld environment it searches nothing outside the app.
+    type Dev_Switch is ("True", "False");
+    Dev : Dev_Switch := external ("Dev", "False");
+    Dev_Libs := ();
+
+    case Dev is
+        when "True"
+            => Dev_Libs := ("-Wl,-dyld_env,DYLD_LIBRARY_PATH=/opt/homebrew/opt/sdl3/lib:/usr/local/opt/sdl3/lib");
+        when "False"
+            => null;
+    end case;
+
     --  SDL2 is found through Alire's environment: system folders on Linux, Homebrew on macOS, msys2 on Windows. FreeBSD's pkg puts it in /usr/local, set here.
     --  Otherwise, or for a static SDL2, pass -XSDL2_CFLAGS="-I<folder>" -XSDL2_LIBS="-L<folder> -lSDL2" (plus what
     --  pkg-config --static --libs sdl2 lists).
@@ -46,11 +59,10 @@ project Joularenergymeter is
     case PJ_OS is
         when "macos" =>
             Defines := ("-DPJ_MACOS");
-            --  No default rpaths into build folders or the toolchain. Homebrew's SDL2 loads SDL3 by name and dyld would also search the current folder, as root under sudo, so Homebrew's folders go first.
-            --  IOKit keeps the machine awake while measuring. dead_strip drops unused code, about a third of the binary.
-            OS_Libs := ("-nodefaultrpaths", "-Wl,-dead_strip",
-                        "-Wl,-dyld_env,DYLD_LIBRARY_PATH=/opt/homebrew/opt/sdl3/lib:/usr/local/opt/sdl3/lib",
-                        "-framework", "IOKit", "-framework", "CoreFoundation");
+            --  No default rpaths into build folders or the toolchain. IOKit keeps the machine awake while measuring.
+            --  dead_strip drops unused code, about a third of the binary.
+            OS_Libs := ("-nodefaultrpaths", "-Wl,-dead_strip") & Dev_Libs
+                       & ("-framework", "IOKit", "-framework", "CoreFoundation");
         when "windows" =>
             --  GUI subsystem so no console opens; SDL2main provides WinMain
             Default_SDL2_Libs := "-lmingw32 -lSDL2main -lSDL2 -mwindows";

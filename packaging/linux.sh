@@ -16,9 +16,13 @@
 . "$(dirname "$0")/common.sh"
 need dpkg-deb rpmbuild bsdtar zstd curl objdump
 
+# linuxdeploy release for the AppImage, and the SHA-256 of its AppImage for this architecture
+LINUXDEPLOY_VERSION=1-alpha-20251107-1
 case $(uname -m) in
-    x86_64) ARCH=x86_64; DEB_ARCH=amd64 ;;
-    aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
+    x86_64) ARCH=x86_64; DEB_ARCH=amd64
+            LINUXDEPLOY_SHA256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d ;;
+    aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64
+            LINUXDEPLOY_SHA256=620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff ;;
     *) echo "no package for $(uname -m)" >&2; exit 1 ;;
 esac
 
@@ -139,9 +143,11 @@ chmod 644 "$DIST/$NAME-$VERSION-1-$ARCH.pkg.tar.zst"
 # every desktop has (glibc, X11, sound...). Runs without FUSE, as in containers.
 LINUXDEPLOY="$ROOT/obj/linuxdeploy-$ARCH.AppImage"
 if [ ! -x "$LINUXDEPLOY" ]; then
-    curl -fsSL -o "$LINUXDEPLOY" \
-        "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-$ARCH.AppImage"
-    chmod +x "$LINUXDEPLOY"
+    curl -fsSL -o "$WORK/linuxdeploy" \
+        "https://github.com/linuxdeploy/linuxdeploy/releases/download/$LINUXDEPLOY_VERSION/linuxdeploy-$ARCH.AppImage"
+    verify "$WORK/linuxdeploy" "$LINUXDEPLOY_SHA256"
+    chmod +x "$WORK/linuxdeploy"
+    mv "$WORK/linuxdeploy" "$LINUXDEPLOY"
 fi
 cp assets/icon.png "$WORK/$NAME.png"
 install -D -m 644 data/carbon-intensity.csv "$WORK/AppDir/usr/share/$NAME/carbon-intensity.csv"

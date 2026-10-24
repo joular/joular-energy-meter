@@ -22,6 +22,7 @@ FRAMEWORKS="$ROOT/obj/SDL2-$SDL2_VERSION"
 if [ ! -d "$FRAMEWORKS/SDL2.framework" ]; then
     curl -fsSL -o "$WORK/SDL2.dmg" \
         "https://github.com/libsdl-org/SDL/releases/download/release-$SDL2_VERSION/SDL2-$SDL2_VERSION.dmg"
+    verify "$WORK/SDL2.dmg" 4a7ac31640d70214e848f994be8a12849c0f97918a7e6c2e27a40036166d1a7f
     hdiutil attach -quiet -nobrowse -readonly -mountpoint "$WORK/SDL2" "$WORK/SDL2.dmg"
     mkdir -p "$FRAMEWORKS"
     ditto "$WORK/SDL2/SDL2.framework" "$FRAMEWORKS/SDL2.framework"
@@ -50,6 +51,11 @@ build() {
     fi
     if ! echo "$needed" | grep -q "@rpath/SDL2.framework"; then
         echo "the program isn't linked against SDL2.framework" >&2
+        exit 1
+    fi
+    # Users run it with sudo: no dyld environment telling it where else to look (the -XDev=True build's)
+    if otool -l "bin/app/$NAME" | grep -q LC_DYLD_ENVIRONMENT; then
+        echo "the program carries a dyld environment, was it built with -XDev=True?" >&2
         exit 1
     fi
 }

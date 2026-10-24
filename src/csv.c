@@ -34,6 +34,7 @@ static bool recording;
 static target recorded;
 static char system_path[4096];
 static char target_path[sizeof system_path + sizeof recorded.app + 8];   /* "-<app>.csv" appended */
+static FILE *system_out, *target_out;   /* open for the session, target_out when following */
 
 static char trouble[sizeof target_path + 64];
 
@@ -135,23 +136,25 @@ static const char *target_row(const history_point *p, char *buf, size_t n)
     return buf;
 }
 
-/* Append row, writing header first if the file is new or empty. Closed after each row so
- * rows survive a crash and the file can be read meanwhile. NULL row just creates the file. */
-static bool append_row(const char *name, const char *header, const char *row)
+/* A line, flushed at once so rows survive a crash and the file can be read meanwhile */
+static bool write_line(FILE *f, const char *line)
+{
+    return fprintf(f, "%s\n", line) > 0 && fflush(f) == 0;
+}
+
+/* Opens the file for the session's rows, with the header first if it is new or empty */
+static FILE *open_rows(const char *name, const char *header)
 {
     FILE *f = open_csv(name, true);
-    bool ok = true;
 
-    if (f == NULL)
-        return false;
+    if (f != NULL && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0 && !write_line(f, header)) {
+        int reason = errno;
 
-    if (fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0)
-        ok = fprintf(f, "%s\n", header) > 0;
-
-    if (ok && row != NULL)
-        ok = fprintf(f, "%s\n", row) > 0;
-
-    return fclose(f) == 0 && ok;
+        fclose(f);
+        errno = reason;
+        return NULL;
+    }
+    return f;
 }
 
 bool csv_start_recording(const char *system_file, const target *t)
@@ -167,11 +170,15 @@ bool csv_start_recording(const char *system_file, const target *t)
 
     csv_target_file(system_file, t, target_path, sizeof target_path);
 
-    if (!append_row(system_path, SYSTEM_HEADER, NULL))
+    system_out = open_rows(system_path, SYSTEM_HEADER);
+    if (system_out == NULL)
         return cannot_write(system_path);
 
-    if (t->kind != TARGET_WHOLE_SYSTEM && !append_row(target_path, TARGET_HEADER, NULL))
-        return cannot_write(target_path);
+    if (t->kind != TARGET_WHOLE_SYSTEM && (target_out = open_rows(target_path, TARGET_HEADER)) == NULL) {
+        cannot_write(target_path);
+        csv_stop_recording();
+        return false;
+    }
 
     recorded = *t;
     recording = true;
@@ -185,11 +192,10 @@ bool csv_record_point(const history_point *p)
     if (!recording)
         return true;
 
-    if (!append_row(system_path, SYSTEM_HEADER, system_row(p, row, sizeof row)))
+    if (!write_line(system_out, system_row(p, row, sizeof row)))
         return cannot_write(system_path);
 
-    if (recorded.kind != TARGET_WHOLE_SYSTEM
-        && !append_row(target_path, TARGET_HEADER, target_row(p, row, sizeof row)))
+    if (recorded.kind != TARGET_WHOLE_SYSTEM && !write_line(target_out, target_row(p, row, sizeof row)))
         return cannot_write(target_path);
 
     return true;
@@ -198,6 +204,9 @@ bool csv_record_point(const history_point *p)
 void csv_stop_recording(void)
 {
     recording = false;
+    if (system_out != NULL) fclose(system_out);
+    if (target_out != NULL) fclose(target_out);
+    system_out = target_out = NULL;
 }
 
 bool csv_is_recording(void)

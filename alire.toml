@@ -34,6 +34,8 @@ libsdl2 = "*"
 
 [gpr-externals]
 PJ_OS = ["linux", "windows", "macos", "freebsd"]
+# -XDev=True: a macOS build run from this checkout, see the .gpr
+Dev = ["True", "False"]
 
 [gpr-set-externals."case(os)".linux]
 PJ_OS = "linux"

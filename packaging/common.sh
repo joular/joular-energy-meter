@@ -28,6 +28,12 @@ need() {
     done
 }
 
+# Fails unless the downloaded file has the SHA-256 expected (sha256sum on Linux, shasum on macOS)
+verify() {
+    sum=$( (sha256sum "$1" 2> /dev/null || shasum -a 256 "$1") | cut -d' ' -f1)
+    [ "$sum" = "$2" ] || { echo "$1 isn't the file expected, its SHA-256 is $sum" >&2; exit 1; }
+}
+
 # README and the licences: GPL, LVGL's MIT and Barlow's OFL
 docs() {
     mkdir -p "$1"

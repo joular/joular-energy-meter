@@ -12,6 +12,7 @@
 /* Palette, shared styles, fonts and scale */
 
 #include <math.h>
+#include <stdio.h>
 
 #include "app.h"
 #include "theme_private.h"
@@ -83,22 +84,30 @@ static bool even_digit(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, uint32_t
     return true;
 }
 
-/* Created on first use and cached, never freed */
+/* Each size made on first use and cached, never freed: the program uses eight of the slots.
+ * The built-in font, with a word on stderr, if the TTF can't be made (out of memory) or the
+ * cache is full. */
 static const lv_font_t *barlow(bool figures, int32_t logical)
 {
     static struct { bool figures; int32_t px; lv_font_t *plain; lv_font_t even; } made[40];
     static size_t count;
+    static bool said;
     int32_t px = LV_MAX(8, (int32_t)lroundf((float)logical * platform_scale()));
+    lv_font_t *plain = NULL;
 
     for (size_t i = 0; i < count; i++)
         if (made[i].figures == figures && made[i].px == px) return figures ? &made[i].even : made[i].plain;
 
-    LV_ASSERT(count < sizeof made / sizeof *made);
-    lv_font_t *plain = figures ? lv_tiny_ttf_create_data_ex(barlow_figures, barlow_figures_size, px,
-                                                            LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT)
-                               : lv_tiny_ttf_create_data_ex(barlow_medium, barlow_medium_size, px,
-                                                            LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT);
-    LV_ASSERT_NULL(plain);
+    if (count < sizeof made / sizeof *made)
+        plain = figures ? lv_tiny_ttf_create_data_ex(barlow_figures, barlow_figures_size, px,
+                                                     LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT)
+                        : lv_tiny_ttf_create_data_ex(barlow_medium, barlow_medium_size, px,
+                                                     LV_FONT_KERNING_NONE, LV_TINY_TTF_CACHE_GLYPH_CNT);
+    if (plain == NULL) {
+        if (!said) fprintf(stderr, JOULARENERGYMETER_NAME ": the Barlow font can't be made, using the built-in one\n");
+        said = true;
+        return symbols(px);
+    }
     plain->fallback = symbols(px);
     size_t i = count++;
     made[i].figures = figures;

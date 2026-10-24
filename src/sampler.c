@@ -19,7 +19,7 @@
 
 #include "app.h"
 
-/* Pending reports, a minute at 250 ms while the main loop is blocked (window dragged on
+/* Pending reports, four minutes at 1 s while the main loop is blocked (window dragged on
  * Windows, menu open on macOS). Oldest dropped when full */
 #define QUEUE_SIZE 256
 
@@ -40,7 +40,6 @@ static struct {
     bool measuring, paused, quit;
     target followed;
     double interval;
-    double longest;   /* longest interval asked for since the last cycle */
 
     queued queue[QUEUE_SIZE];
     int first, count;
@@ -85,11 +84,10 @@ static int measure(void *unused)
         } else if (s.measuring && s.session != started) {
             report r = { .kind = REPORT_STARTED };
             target t = s.followed;
-            double interval = s.interval;
 
             started = s.session;
             SDL_UnlockMutex(s.lock);
-            monitor_start(&t, interval);
+            monitor_start(&t);
             r.has_cpu = monitor_cpu_available();
             r.has_gpu = monitor_gpu_available();
             r.load_readable = monitor_load_readable();
@@ -101,29 +99,24 @@ static int measure(void *unused)
             last = SDL_GetTicks64();
             post(started, &r);
         } else if (open && s.paused != paused) {
-            double interval = s.interval;
-
             paused = s.paused;
             SDL_UnlockMutex(s.lock);
             if (paused)
                 monitor_pause();
             else
-                monitor_resume(interval);
+                monitor_resume();
             SDL_LockMutex(s.lock);
 
             /* Wait a full interval before the next cycle, as at start */
             last = SDL_GetTicks64();
         } else if (open && !paused && now >= due) {
             report r = { .kind = REPORT_FAILED };
-            /* Longest interval set during the cycle, it waited that long */
-            double interval = s.interval > s.longest ? s.interval : s.longest;
             step_result result;
 
             /* Stay on the grid unless half an interval late (long cycle, sleep, new interval) */
             last = 2 * (now - due) < due - last ? due : now;
-            s.longest = 0.0;
             SDL_UnlockMutex(s.lock);
-            result = monitor_step(interval, &r.data);
+            result = monitor_step(&r.data);
             r.taken = fmt_now();
             r.sum = monitor_session();
             snprintf(r.trouble, sizeof r.trouble, "%s", monitor_trouble());
@@ -211,7 +204,6 @@ void sampler_set_interval(double interval)
 {
     SDL_LockMutex(s.lock);
     s.interval = interval;
-    if (interval > s.longest) s.longest = interval;
     ask();
 }
 

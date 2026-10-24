@@ -201,7 +201,8 @@ static void chosen_record_file(const char *path, void *user_data)
     lv_textarea_set_text(path_entry, path);
 }
 
-/* Starts where the file typed is, in the current folder for a bare name */
+/* Starts where the file typed is, in the current folder for a bare name. Rows are appended to a
+ * file that exists, so no "Replace?" */
 static void on_browse(lv_event_t *e)
 {
     char path[4096];
@@ -209,7 +210,7 @@ static void on_browse(lv_event_t *e)
     LV_UNUSED(e);
     if (!trimmed(lv_textarea_get_text(path_entry), path, sizeof path) || path[0] == '\0')
         snprintf(path, sizeof path, "%s", CSV_DEFAULT_FILE);
-    kit_save_csv("Choose the file to record to", path, csv_file_name(path), chosen_record_file);
+    kit_save_csv("Choose the file to record to", path, csv_file_name(path), true, chosen_record_file);
 }
 
 static void on_record_switched(lv_event_t *e)

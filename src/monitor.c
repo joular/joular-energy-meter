@@ -12,12 +12,20 @@
 /* Hardware side: opens Joular Core, samples CPU load, converts readings to watts and sums
  * the session energy. No LVGL here, measuring thread only. */
 
+/* QueryUnbiasedInterruptTime is Windows 7 or newer */
+#if defined(PJ_WINDOWS) && !defined(_WIN32_WINNT)
+#define _WIN32_WINNT 0x0601
+#endif
+
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 
 #ifdef PJ_WINDOWS
 #include <windows.h>
 #else
+#include <signal.h>
 #include <time.h>
 #endif
 
@@ -31,36 +39,68 @@ static bool has_cpu, has_gpu, load_reads;
 
 static bool running, paused;
 
-/* Set when the followed process can't be read. It ended, and a reused PID is another program */
+/* Set when the followed process ended: a reused PID is another program */
 static bool gone;
 
-/* Baseline CPU sample for the next cycle, when it was taken, and the interval at that time
- * (it can change mid-cycle) */
+/* Baseline CPU sample for the next cycle, and when it was taken on both clocks */
 static cpuload_sample before;
-static double taken_before;
-static double expected;
+static double taken_before, wall_before;
 
 static totals consumed;
 static char trouble[128];
 
-/* Monotonic seconds, counting sleep. Linux CLOCK_MONOTONIC stops during sleep, macOS's doesn't */
+/* Monotonic seconds that stop while the machine sleeps: CLOCK_MONOTONIC on Linux and FreeBSD,
+ * CLOCK_UPTIME_RAW on macOS (its CLOCK_MONOTONIC runs on), unbiased interrupt time on Windows */
 static double now(void)
 {
 #ifdef PJ_WINDOWS
-    LARGE_INTEGER frequency, count;
+    ULONGLONG t;
 
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&count);
-    return (double)count.QuadPart / (double)frequency.QuadPart;
+    QueryUnbiasedInterruptTime(&t);
+    return (double)t / 1e7;
 #else
     struct timespec t;
 
-#ifdef CLOCK_BOOTTIME
-    clock_gettime(CLOCK_BOOTTIME, &t);
+#ifdef PJ_MACOS
+    clock_gettime(CLOCK_UPTIME_RAW, &t);
 #else
     clock_gettime(CLOCK_MONOTONIC, &t);
 #endif
     return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+#endif
+}
+
+/* Wall-clock seconds, which run on through a sleep */
+static double wall(void)
+{
+#ifdef PJ_WINDOWS
+    FILETIME ft;
+    ULARGE_INTEGER t;
+
+    GetSystemTimeAsFileTime(&ft);
+    t.LowPart = ft.dwLowDateTime;
+    t.HighPart = ft.dwHighDateTime;
+    return (double)t.QuadPart / 1e7;
+#else
+    struct timespec t;
+
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+#endif
+}
+
+/* No such process any more, so a later reading of the PID would be another program's. One
+ * that runs but can't be read (another user's, on macOS and Windows) isn't gone. */
+static bool absent(unsigned int pid)
+{
+#ifdef PJ_WINDOWS
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+
+    if (h == NULL) return GetLastError() == ERROR_INVALID_PARAMETER;
+    CloseHandle(h);
+    return false;
+#else
+    return pid > INT_MAX || (kill((pid_t)pid, 0) != 0 && errno == ESRCH);
 #endif
 }
 
@@ -97,15 +137,15 @@ static void take_sample(cpuload_sample *out)
 }
 
 /* Same order as monitor_step, so the CPU sample and the power reading cover the same time */
-static void take_baseline(joularcore_reading *reading, double interval)
+static void take_baseline(joularcore_reading *reading)
 {
     take_sample(&before);
     taken_before = now();
-    expected = interval;
+    wall_before = wall();
     joularcore_read(reading);
 }
 
-void monitor_start(const target *t, double interval)
+void monitor_start(const target *t)
 {
     joularcore_reading first;
 
@@ -119,7 +159,7 @@ void monitor_start(const target *t, double interval)
 
     /* Doesn't fail from C, unreadable sources just show as not available */
     joularcore_open(1, 1);
-    take_baseline(&first, interval);
+    take_baseline(&first);
 
     has_cpu = first.cpu.available != 0;
     has_gpu = first.gpu.available != 0;
@@ -146,7 +186,7 @@ void monitor_pause(void)
         paused = true;
 }
 
-void monitor_resume(double interval)
+void monitor_resume(void)
 {
     /* Energy read across the pause, discarded */
     joularcore_reading discarded;
@@ -156,28 +196,29 @@ void monitor_resume(double interval)
         return;
 
     paused = false;
-    take_baseline(&discarded, interval);
+    take_baseline(&discarded);
 
     /* CPU time only grows, so less means the PID was reused */
     if (followed.kind == TARGET_PROCESS && before.used < paused_at.used)
         gone = true;
 }
 
-step_result monitor_step(double interval, cycle *out)
+step_result monitor_step(cycle *out)
 {
-    cpuload_sample previous = before;
-    double longest_expected = fmax(expected, interval);
-    cpuload_sample after;
+    cpuload_sample previous = before, after;
     joularcore_reading reading;
-    double taken_after, elapsed;
+    double taken_after, wall_after, elapsed, slept;
 
     *out = (cycle){0};
 
     if (!running || paused)
         return STEP_FAILED;
 
+    /* A reason only lasts until the next step */
+    trouble[0] = '\0';
     take_sample(&after);
     taken_after = now();
+    wall_after = wall();
 
     /* Nothing raises across C, so the only failure after a good start is a sample with no
      * machine time. Keep the baseline, the next cycle covers this one too */
@@ -188,15 +229,17 @@ step_result monitor_step(double interval, cycle *out)
 
     joularcore_read(&reading);
 
-    /* Real cycle length, longer than the interval under load */
+    /* Real cycle length, longer than the interval under load. Only the wall clock counts a
+     * sleep, so the gap between the two is how long the machine slept */
     elapsed = taken_after - taken_before;
+    slept = (wall_after - wall_before) - elapsed;
 
     /* Next cycle's baseline, even if this one is dropped */
     before = after;
     taken_before = taken_after;
-    expected = interval;
+    wall_before = wall_after;
 
-    if (elapsed > fmax(SLEEP_FACTOR * longest_expected, SLEEP_SECONDS))
+    if (slept > RESUME_SECONDS)
         return STEP_SKIPPED;
 
     out->cpu_usage = cpuload_system_usage(&previous, &after);
@@ -205,16 +248,20 @@ step_result monitor_step(double interval, cycle *out)
     out->total_power = out->cpu_power + out->gpu_power;
 
     if (followed.kind != TARGET_WHOLE_SYSTEM) {
-        /* PID reused, same check as on resume */
-        if (followed.kind == TARGET_PROCESS && previous.used >= 0 && after.used >= 0
-            && after.used < previous.used)
-            gone = true;
-
         /* Negative load means the target couldn't be read */
         out->target_usage = cpuload_process_usage(&previous, &after);
+
+        /* Gone for good when the process ended, or its CPU time went backwards (the PID was
+         * reused, same check as on resume). CPU Load says -1 for a process it can't read, be
+         * it gone or another user's: a read failure alone only costs this cycle */
+        if (followed.kind == TARGET_PROCESS
+            && (after.used < 0 ? absent(followed.pid) : previous.used >= 0 && after.used < previous.used))
+            gone = true;
         if (gone)
             out->target_usage = UNREADABLE;
-        gone = followed.kind == TARGET_PROCESS && out->target_usage < 0.0;
+        else if (out->target_usage < 0.0)
+            snprintf(trouble, sizeof trouble, followed.kind == TARGET_PROCESS
+                     ? "it is running, but access is denied" : "access is denied");
 
         if (out->target_usage >= 0.0) consumed.target_read = true;
         if (out->target_usage < 0.0) {

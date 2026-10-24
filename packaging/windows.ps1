@@ -18,6 +18,7 @@ Set-Location $Root
 $Name = 'joularenergymeter'
 $Version = ([regex]'(?m)^version *= *"(.*)"').Match((Get-Content -Raw alire.toml)).Groups[1].Value
 $Sdl2Version = '2.32.10'
+$Sdl2Sha256 = '6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb'   # of SDL2-$Sdl2Version-win32-x64.zip
 $WixVersion = '5.0.2'
 $Work = Join-Path $Root 'obj\packaging'
 $Dist = Join-Path $Root 'dist'
@@ -34,6 +35,7 @@ if ($env:SKIP_BUILD -ne '1') {
 # SDL's SDL2.dll beside the program, which won't start without it
 Invoke-WebRequest -UseBasicParsing -OutFile "$Work\SDL2.zip" `
     -Uri "https://github.com/libsdl-org/SDL/releases/download/release-$Sdl2Version/SDL2-$Sdl2Version-win32-x64.zip"
+if ((Get-FileHash "$Work\SDL2.zip" -Algorithm SHA256).Hash -ne $Sdl2Sha256) { throw 'SDL2.zip is not the file expected' }
 Expand-Archive "$Work\SDL2.zip" -DestinationPath "$Work\SDL2"
 Copy-Item "$Work\SDL2\SDL2.dll", "$Work\SDL2\README-SDL.txt" bin
 

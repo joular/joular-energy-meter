@@ -62,26 +62,26 @@ typedef struct target {
 const char *target_name(const target *t, char *buf, size_t n);
 
 /* Sampling interval stops.
- * Under 250 ms the energy counters barely move; over 10 s RAPL can wrap more than once
- * under load. */
+ * Under 1 s the CPU counters are too coarse (CPU Load reads a process in 10 ms units on
+ * Linux, ~15 ms on Windows) and the energy counters barely move. 10 s at most, well before
+ * RAPL's counters wrap (after minutes under load, see joularcore.h). */
 typedef enum {
-    MS_250, MS_500, MS_750, SEC_1, SEC_2, SEC_3, SEC_4, SEC_5, SEC_10,
+    SEC_1, SEC_2, SEC_3, SEC_4, SEC_5, SEC_10,
     INTERVAL_COUNT
 } interval_choice;
 
 double interval_seconds(interval_choice c);
-const char *interval_label(interval_choice c);   /* "250 ms", "1 s" */
+const char *interval_label(interval_choice c);   /* "1 s", "10 s" */
 
 /* Current interval. Main thread only.
  * Safe to change mid-run: each cycle is divided by its real duration. */
 interval_choice chosen_interval(void);
 void set_interval(interval_choice c);
 
-/* A cycle lasting >= SLEEP_FACTOR intervals and >= SLEEP_SECONDS means the machine slept.
- * Counters have probably wrapped, so the cycle is dropped. Shorter stalls (e.g. powermetrics
- * restarting) are kept. */
-#define SLEEP_FACTOR 5.0
-#define SLEEP_SECONDS 10.0
+/* The wall clock gets this far ahead of the monotonic clock across a cycle only when the
+ * machine slept. Counters have probably wrapped, so the cycle is dropped. A clock set forward
+ * drops one cycle too. */
+#define RESUME_SECONDS 2.0
 
 /* Load or power of a process that couldn't be read (gone, never ran, access denied), or of
  * an app none of whose processes could be read. An app with no process running reads 0, as
@@ -102,11 +102,11 @@ typedef struct cycle {
 /* The hardware                                                              (monitor.c)  */
 /* -------------------------------------------------------------------------------------- */
 /* Opens Joular Core, samples CPU load, computes watts and session energy. No LVGL here.
- * Joular Core isn't thread safe: only call from the sampler.c thread. interval is in seconds. */
+ * Joular Core isn't thread safe: only call from the sampler.c thread. */
 
 /* Opens the hardware and takes the first baseline. Still starts with no readable power
  * source, see monitor_cpu_available. */
-void monitor_start(const target *t, double interval);
+void monitor_start(const target *t);
 
 /* On macOS this stops the powermetrics child. Safe when nothing runs. */
 void monitor_stop(void);
@@ -114,16 +114,16 @@ void monitor_stop(void);
 /* Pause keeps the session. Resume takes a new baseline so the paused energy isn't one huge
  * cycle; paused time is excluded from the duration. */
 void monitor_pause(void);
-void monitor_resume(double interval);
+void monitor_resume(void);
 
 typedef enum {
     STEP_MEASURED,  /* *out holds a cycle */
-    STEP_SKIPPED,   /* cycle too long, machine slept */
+    STEP_SKIPPED,   /* machine slept during the cycle */
     STEP_FAILED     /* reading failed, can carry on */
 } step_result;
 
 /* *out only valid on STEP_MEASURED */
-step_result monitor_step(double interval, cycle *out);
+step_result monitor_step(cycle *out);
 
 /* What was available at monitor_start */
 bool monitor_cpu_available(void);
@@ -144,7 +144,7 @@ typedef struct totals {
 
 totals monitor_session(void);
 
-/* Why the last start or step failed, "" if none */
+/* Why the last start or step failed, or why its target couldn't be read; "" if nothing */
 const char *monitor_trouble(void);
 
 /* -------------------------------------------------------------------------------------- */
@@ -167,7 +167,8 @@ typedef struct report {
     int64_t taken;                                  /* REPORT_MEASURED, as fmt_now */
     cycle data;                                     /* REPORT_MEASURED */
     totals sum;                                     /* REPORT_MEASURED */
-    char trouble[128];                              /* why open or reading failed */
+    char trouble[128];                              /* why open or reading failed, or why the
+                                                     * target couldn't be read */
 } report;
 
 /* on_report gets every report of the current session. False (reason on stderr) if the
@@ -445,8 +446,9 @@ void kit_show(lv_obj_t *obj, bool visible);
 void kit_enable(lv_obj_t *obj, bool enabled);
 
 /* The file browser in this look, to save a CSV file: start as in file_browser_options, name
- * proposed. on_choose gets the full path. */
-void kit_save_csv(const char *title, const char *start, const char *name, file_browser_cb on_choose);
+ * proposed. It asks before a file is replaced, not when rows are appended to it. on_choose
+ * gets the full path. */
+void kit_save_csv(const char *title, const char *start, const char *name, bool appends, file_browser_cb on_choose);
 
 /* -------------------------------------------------------------------------------------- */
 /* The window                                                                (ui.c)       */

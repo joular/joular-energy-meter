@@ -586,13 +586,14 @@ void kit_enable(lv_obj_t *obj, bool enabled)
     if (lv_obj_has_state(obj, LV_STATE_DISABLED) != !enabled) lv_obj_set_state(obj, LV_STATE_DISABLED, !enabled);
 }
 
-void kit_save_csv(const char *title, const char *start, const char *name, file_browser_cb on_choose)
+void kit_save_csv(const char *title, const char *start, const char *name, bool appends, file_browser_cb on_choose)
 {
     file_browser_options options = {
         .title = title,
         .start = start,
         .extension = ".csv",
         .save_as = name,
+        .appends = appends,
         .on_choose = on_choose,
         .theme = theme_browser(),
     };

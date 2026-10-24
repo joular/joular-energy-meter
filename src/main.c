@@ -85,7 +85,7 @@ int main(int argc, char *argv[])
     } else if (strcmp(option, "-h") == 0 || strcmp(option, "--help") == 0) {
         use_parent_console();
         printf(JOULARENERGYMETER_NAME " %s monitors the power consumption of multiple platforms, processes and applications\n", JOULARENERGYMETER_VERSION);
-        puts("What to monitor is chosen in the GUI window. The only options are:");
+        puts("What to monitor, and how often (every 1 to 10 s), is chosen in the GUI window. The only options are:");
         puts("  -v, --version   print the versions and stop");
         puts("  -h, --help      print this and stop");
     } else if (option[0] == '-') {

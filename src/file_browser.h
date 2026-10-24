@@ -12,10 +12,10 @@
 /*
  * File browser dialog for LVGL 9.6, the same on Linux, macOS, FreeBSD and Windows: a path field
  * over a list of folders, then files, with Home, Up, Cancel and Choose. It opens a file or a
- * folder, or saves a file with a Name field. It works as a desktop one: a click selects, a double
- * click opens a folder or picks a file, and from the keyboard the arrows, Home and End select,
- * Enter opens, Backspace goes up, letters jump to a name, / and ~ start a path, Esc cancels.
- * Paths are UTF-8.
+ * folder, or saves a file with a Name field, asking before writing over one. It works as a
+ * desktop one: a click selects, a double click opens a folder or picks a file, and from the
+ * keyboard the arrows, Home and End select, Enter opens, Backspace goes up, letters jump to a
+ * name, / and ~ start a path, Esc cancels. Paths are UTF-8.
  *
  * Copy file_browser.c and file_browser.h into a project. They need:
  * - LVGL 9.6 or newer with LV_USE_TABLE, LV_USE_TEXTAREA, LV_USE_LABEL and LV_USE_BUTTON;
@@ -62,7 +62,8 @@ typedef struct file_browser_options {
     const char *extension;      /* files ending with it, ignoring case ("" for every file);
                                  * NULL to choose a folder */
     const char *save_as;        /* to save a file: the name proposed, and Choose gives it in the
-                                 * folder shown; NULL to open one */
+                                 * folder shown, asking before replacing one; NULL to open one */
+    bool appends;               /* to save: the host adds to a file that exists, so no question */
     file_browser_cb on_choose;
     void *user_data;
     const file_browser_theme *theme;   /* NULL: the default; read on the first opening only */

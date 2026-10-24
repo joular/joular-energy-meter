@@ -60,10 +60,12 @@
 
 static struct {
     lv_obj_t *dialog, *title, *name_row, *name, *where, *table, *choose, *message;
-    lv_group_t *group, *before;
+    lv_obj_t *asking, *question, *replace;   /* "Replace?" over the dialog, to save over a file */
+    lv_group_t *group, *asking_group, *before;
+    char pending[PATH_SIZE];   /* the file Replace writes over */
     char folder[PATH_SIZE];   /* "" for the drives on Windows */
     char extension[64];
-    bool folders_only, saving;
+    bool folders_only, saving, appends;
     file_browser_cb on_choose;
     void *user_data;
     uint32_t selected, clicked_before;   /* rows clicked last and the time before; LV_TABLE_CELL_NONE */
@@ -80,6 +82,7 @@ static struct {
 
 static void show_choose(void);
 static void on_choose(lv_event_t *e);
+static lv_indev_t *keypad(void);
 
 /* -------------------------------------------------------------------------------------- */
 /* Text                                                                                   */
@@ -122,6 +125,16 @@ static bool cut_name(char *path, char *name, size_t n)
     if (name) fits(name, n, "%s", cut + 1);
     cut[cut == path + ROOT ? 1 : 0] = '\0';   /* the root keeps its separator */
     return true;
+}
+
+/* The name at the end of a path, which may be typed with either separator on Windows */
+static const char *name_of(const char *path)
+{
+    const char *name = path;
+
+    for (const char *s = path; *s; s++)
+        if (strchr(SEPARATORS, *s)) name = s + 1;
+    return name;
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -557,7 +570,7 @@ static void show_choose(void)
     lv_obj_set_disabled(fb.choose, !choice(path, sizeof path));
 }
 
-static void choose(const char *path)
+static void deliver(const char *path)
 {
     file_browser_cb on_choose = fb.on_choose;
     void *user_data = fb.user_data;
@@ -567,6 +580,28 @@ static void choose(const char *path)
     fits(chosen, sizeof chosen, "%s", path);
     file_browser_close();
     if (on_choose) on_choose(chosen, user_data);
+}
+
+/* The keyboard moves to the question while it is up */
+static void ask(bool up)
+{
+    lv_indev_t *keyboard = keypad();
+
+    lv_obj_set_hidden(fb.asking, !up);
+    if (keyboard) lv_indev_set_group(keyboard, up ? fb.asking_group : fb.group);
+    if (up) lv_group_focus_obj(fb.replace);
+}
+
+/* Saving over a file asks first, as a desktop dialog does */
+static void choose(const char *path)
+{
+    if (!fb.saving || fb.appends || !is_file(path)) {
+        deliver(path);
+        return;
+    }
+    fits(fb.pending, sizeof fb.pending, "%s", path);
+    lv_label_set_text_fmt(fb.question, "%s already exists. Replace it?", name_of(path));
+    ask(true);
 }
 
 /* A folder opens, a file is chosen, the Up row goes up */
@@ -748,9 +783,27 @@ static void on_cancel(lv_event_t *e)
     file_browser_close();
 }
 
+static void on_replace(lv_event_t *e)
+{
+    (void)e;
+    ask(false);
+    deliver(fb.pending);
+}
+
+static void on_keep(lv_event_t *e)
+{
+    (void)e;
+    ask(false);
+}
+
+/* Esc takes back the question first, then the dialog */
 static void on_escape(lv_event_t *e)
 {
-    if (lv_event_get_key(e) == LV_KEY_ESC) file_browser_close();
+    if (lv_event_get_key(e) != LV_KEY_ESC) return;
+    if (!lv_obj_is_hidden(fb.asking))
+        ask(false);
+    else
+        file_browser_close();
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -894,6 +947,31 @@ static void build(void)
     button(keys, "Cancel", false, on_cancel);
     fb.choose = button(keys, "Choose", true, on_choose);
 
+    /* The question over the dialog, in its own group: a second backdrop taking every click,
+     * and a small plate with the text and Cancel and Replace */
+    fb.asking_group = lv_group_create();
+    lv_group_set_default(fb.asking_group);
+    fb.asking = lv_obj_create(fb.dialog);
+    lv_obj_remove_style_all(fb.asking);
+    lv_obj_add_style(fb.asking, &fb.st.backdrop, 0);
+    lv_obj_set_size(fb.asking, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_scrollable(fb.asking, false);
+    lv_obj_set_hidden(fb.asking, true);
+    plate = lv_obj_create(fb.asking);
+    lv_obj_remove_style_all(plate);
+    lv_obj_add_style(plate, &fb.st.plate, 0);
+    lv_obj_set_size(plate, lv_dpx(400), LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(plate, LV_PCT(92), 0);
+    lv_obj_set_scrollable(plate, false);
+    lv_obj_set_flex_flow(plate, LV_FLEX_FLOW_COLUMN);
+    lv_obj_center(plate);
+    fb.question = lv_label_create(plate);
+    lv_obj_set_width(fb.question, LV_PCT(100));
+    keys = box(plate);
+    lv_obj_set_flex_align(keys, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    button(keys, "Cancel", false, on_keep);
+    fb.replace = button(keys, "Replace", true, on_replace);
+
     lv_group_set_default(default_group);
 }
 
@@ -916,6 +994,7 @@ void file_browser_open(const file_browser_options *options)
     }
     lv_label_set_text(fb.title, options->title ? options->title : "");
     fb.saving = options->save_as != NULL;
+    fb.appends = options->appends;
     fb.folders_only = options->extension == NULL && !fb.saving;
     fits(fb.extension, sizeof fb.extension, "%s", options->extension ? options->extension : "");
     lv_obj_set_hidden(fb.name_row, !fb.saving);
@@ -944,6 +1023,7 @@ void file_browser_close(void)
 
     if (!file_browser_is_open()) return;
     if (keyboard) lv_indev_set_group(keyboard, fb.before);
+    lv_obj_set_hidden(fb.asking, true);
     lv_obj_set_hidden(fb.dialog, true);
     /* The listing isn't kept: the next opening reads its folder again */
     lv_table_set_row_count(fb.table, 1);

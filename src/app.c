@@ -29,16 +29,14 @@ const char *target_name(const target *t, char *buf, size_t n)
 
 double interval_seconds(interval_choice c)
 {
-    static const double seconds[INTERVAL_COUNT] = {0.25, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0};
+    static const double seconds[INTERVAL_COUNT] = {1.0, 2.0, 3.0, 4.0, 5.0, 10.0};
 
     return seconds[c];
 }
 
 const char *interval_label(interval_choice c)
 {
-    static const char *const labels[INTERVAL_COUNT] = {
-        "250 ms", "500 ms", "750 ms", "1 s", "2 s", "3 s", "4 s", "5 s", "10 s"
-    };
+    static const char *const labels[INTERVAL_COUNT] = { "1 s", "2 s", "3 s", "4 s", "5 s", "10 s" };
 
     return labels[c];
 }

@@ -88,7 +88,6 @@ static char alarm_command[1024];
 static lv_obj_t *span_label, *export_key, *cpu_key, *gpu_key, *target_key, *target_key_name;
 static lv_obj_t *scale, *chart, *chart_note, *ago_far, *ago_mid;
 static lv_chart_series_t *lines[4];
-static int32_t points[4][HISTORY_CAPACITY];
 
 /* Band labels, static as lv_scale keeps the pointers */
 static char band_text[5][16];
@@ -100,6 +99,7 @@ static int samples;
 static run_state run = RUN_IDLE;
 static bool has_cpu, has_gpu, load_reads;
 static bool target_lost;   /* followed program unreadable at the last cycle */
+static bool csv_failed;    /* the last CSV row couldn't be written, said once */
 
 /* -------------------------------------------------------------------------------------- */
 /* Text                                                                                   */
@@ -598,11 +598,8 @@ static void show_cycle(const cycle *data, const totals *sum, int64_t taken)
     show_split(data, has_power);
     if (has_power) {
         show_session(data->total_power, taken, sum);
-        /* Under a 1 s interval the wheels never settle, so jump instead of rolling */
-        bool roll = interval_seconds(chosen_interval()) >= 1.0;
-
-        show_register(sum->total_energy, roll);
-        turn_disc(sum->total_energy, roll);
+        show_register(sum->total_energy, true);
+        turn_disc(sum->total_energy, true);
     }
 }
 
@@ -641,6 +638,27 @@ static void clear_readings(void)
 /* The trend                                                                              */
 /* -------------------------------------------------------------------------------------- */
 
+/* Chart unit: hundredths of a watt, or whole watts above 10 kW, LVGL chart points are 32 bit */
+static double per_watt = 100.0;
+
+/* Appends a measurement, or a gap, to each series. The chart shifts its points along and
+ * redraws itself, nothing else is rewritten. */
+static void plot(const history_point *p)
+{
+    for (int s = 0; s < 4; s++) {
+        double value = history_value(p, (series)s);
+
+        lv_chart_set_next_value(chart, lines[s], value >= 0.0 ? (int32_t)lround(value * per_watt) : LV_CHART_POINT_NONE);
+    }
+}
+
+/* Every point again, newest at the right edge: after the history was cleared, or in a new unit */
+static void replot(void)
+{
+    for (int s = 0; s < 4; s++) lv_chart_set_all_values(chart, lines[s], LV_CHART_POINT_NONE);
+    for (int i = 1; i <= history_count(); i++) plot(history_get(i));
+}
+
 static void refresh_chart(void)
 {
     /* At most four bands up to the peak, 1 W scale when idle or empty */
@@ -650,27 +668,20 @@ static void refresh_chart(void)
     int decimals = decimals_of(step);
     int count = history_count();
     bool cpu = cpu_expected();
-    /* Hundredths of a watt, or whole watts above 10 kW, LVGL chart points are 32 bit */
-    double per_watt = highest > 10000.0 ? 1.0 : 100.0;
-
-    /* Newest measurement at the right edge */
-    for (int s = 0; s < 4; s++) {
-        for (int i = 0; i < HISTORY_CAPACITY; i++) points[s][i] = LV_CHART_POINT_NONE;
-        for (int i = 1; i <= count; i++) {
-            double value = history_value(history_get(i), (series)s);
-            if (value >= 0.0)
-                points[s][HISTORY_CAPACITY - count + i - 1] = (int32_t)lround(value * per_watt);
-        }
-    }
-    static double shown_step, shown_per_watt;
+    double unit = highest > 10000.0 ? 1.0 : 100.0;
+    static double shown_step;
     static int shown_bands = -1;
     bool empty = count == 0 || !(cpu || has_gpu);
 
+    if (unit != per_watt) {
+        per_watt = unit;
+        replot();
+        shown_bands = -1;   /* the range is in the new unit */
+    }
     /* Only reset the scale when it changes, which is rare */
-    if (bands != shown_bands || step != shown_step || per_watt != shown_per_watt) {
+    if (bands != shown_bands || step != shown_step) {
         shown_bands = bands;
         shown_step = step;
-        shown_per_watt = per_watt;
         lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, (int32_t)lround(step * bands * per_watt));
         lv_chart_set_div_line_count(chart, (uint32_t)bands + 1, 0);
 
@@ -701,8 +712,6 @@ static void refresh_chart(void)
     else if (count == 0)
         kit_set_text(chart_note, "Waiting for the first measurement…");
     kit_show(chart_note, empty);
-
-    lv_chart_refresh(chart);
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -1164,6 +1173,8 @@ static void build_trend(lv_obj_t *column)
     lv_obj_set_scrollable(chart, false);
     lv_obj_set_clickable(chart, false);
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    /* A report appends one point per series, the oldest drops off the left */
+    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_chart_set_point_count(chart, HISTORY_CAPACITY);
     lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(chart, 0, LV_PART_MAIN);
@@ -1178,7 +1189,6 @@ static void build_trend(lv_obj_t *column)
     for (size_t i = 0; i < 4; i++) {
         series s = order[i];
         lines[s] = lv_chart_add_series(chart, theme_color(pen[s]), LV_CHART_AXIS_PRIMARY_Y);
-        lv_chart_set_series_ext_y_array(chart, lines[s], points[s]);
     }
     /* On a plate-coloured patch hiding the grid */
     chart_note = kit_label(chart, "", TEXT_MUTED);
@@ -1232,9 +1242,10 @@ void display_start(const target *t)
     session_target = *t;
     samples = 0;
     history_clear();
+    replot();
     has_cpu = has_gpu = false;
     load_reads = true;
-    target_lost = false;
+    target_lost = csv_failed = false;
 
     target_name(t, name, sizeof name);
     if (t->kind == TARGET_APPLICATION)
@@ -1285,8 +1296,10 @@ static void break_trend(void)
         .data = { UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE },
     };
 
-    if (history_count() > 0 && history_get(history_count())->taken != 0)
+    if (history_count() > 0 && history_get(history_count())->taken != 0) {
         history_append(&gap);
+        plot(&gap);
+    }
 }
 
 void display_pause(bool paused)
@@ -1324,7 +1337,7 @@ static void exported(const char *path, void *user_data)
 
 void display_export(void)
 {
-    kit_save_csv("Export the trend to", export_path, csv_file_name(export_path), exported);
+    kit_save_csv("Export the trend to", export_path, csv_file_name(export_path), false, exported);
 }
 
 /* Trend points are one interval apart, as the time labels assume. A running session's trend
@@ -1340,6 +1353,7 @@ void display_interval_changed(void)
     show_span();
     if (history_count() > 0) {
         history_clear();
+        replot();
         set_run(run);
         say("Every %s from now: the trend starts again.", interval_label(chosen_interval()));
     }
@@ -1368,6 +1382,7 @@ void display_report(const report *r)
 
         samples++;
         history_append(&point);
+        plot(&point);
         written = csv_record_point(&point);
         show_cycle(&r->data, &r->sum, r->taken);
         refresh_chart();
@@ -1382,10 +1397,11 @@ void display_report(const report *r)
             target_lost = !target_lost;
             if (target_lost)
                 warn("%s could not be read: %s.", target_name(&session_target, name, sizeof name),
-                    session_target.kind == TARGET_PROCESS ? "it is not running, or access is denied"
-                                                          : "access is denied");
+                     r->trouble[0] ? r->trouble : "it is not running");
         }
-        if (!written) warn("%s. Measuring goes on.", csv_trouble());
+        /* Once per failure, again only after a row was written */
+        if (!written && !csv_failed) warn("%s. Measuring goes on.", csv_trouble());
+        csv_failed = !written;
         break;
     }
     case REPORT_SKIPPED:
@@ -1397,6 +1413,7 @@ void display_report(const report *r)
     case REPORT_FAILED:
         missed++;
         show_samples();
+        break_trend();
         warn("A measurement failed (%s). Measuring goes on.", r->trouble);
         break;
     }
