@@ -42,22 +42,23 @@ static bool running, paused;
 /* Set when the followed process ended: a reused PID is another program */
 static bool gone;
 
-/* Baseline CPU sample for the next cycle, and when it was taken on both clocks */
+/* Baseline CPU sample for the next cycle, when it was taken, and how long the machine had slept */
 static cpuload_sample before;
-static double taken_before, wall_before;
+static double taken_before, asleep_before;
 
 static totals consumed;
 static char trouble[128];
 
-/* Monotonic seconds that stop while the machine sleeps: CLOCK_MONOTONIC on Linux and FreeBSD,
- * CLOCK_UPTIME_RAW on macOS (its CLOCK_MONOTONIC runs on), unbiased interrupt time on Windows */
+/* Monotonic seconds that time a cycle: CLOCK_MONOTONIC on Linux and FreeBSD, CLOCK_UPTIME_RAW on
+ * macOS (its CLOCK_MONOTONIC runs on through a sleep), the performance counter on Windows */
 static double now(void)
 {
 #ifdef PJ_WINDOWS
-    ULONGLONG t;
+    LARGE_INTEGER frequency, count;
 
-    QueryUnbiasedInterruptTime(&t);
-    return (double)t / 1e7;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart / (double)frequency.QuadPart;
 #else
     struct timespec t;
 
@@ -70,22 +71,26 @@ static double now(void)
 #endif
 }
 
-/* Wall-clock seconds, which run on through a sleep */
-static double wall(void)
+/* Seconds slept since some fixed point: how far the wall clock, which runs on through a sleep,
+ * is ahead of a clock that stops. On Windows that is the unbiased interrupt time (the performance
+ * counter may run on), which only moves once per timer tick: plenty for RESUME_SECONDS */
+static double asleep(void)
 {
 #ifdef PJ_WINDOWS
     FILETIME ft;
     ULARGE_INTEGER t;
+    ULONGLONG awake;
 
     GetSystemTimeAsFileTime(&ft);
+    QueryUnbiasedInterruptTime(&awake);
     t.LowPart = ft.dwLowDateTime;
     t.HighPart = ft.dwHighDateTime;
-    return (double)t.QuadPart / 1e7;
+    return (double)(t.QuadPart - awake) / 1e7;
 #else
     struct timespec t;
 
     clock_gettime(CLOCK_REALTIME, &t);
-    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9 - now();
 #endif
 }
 
@@ -141,7 +146,7 @@ static void take_baseline(joularcore_reading *reading)
 {
     take_sample(&before);
     taken_before = now();
-    wall_before = wall();
+    asleep_before = asleep();
     joularcore_read(reading);
 }
 
@@ -207,7 +212,7 @@ step_result monitor_step(cycle *out)
 {
     cpuload_sample previous = before, after;
     joularcore_reading reading;
-    double taken_after, wall_after, elapsed, slept;
+    double taken_after, asleep_after, elapsed, slept;
 
     *out = (cycle){0};
 
@@ -218,7 +223,7 @@ step_result monitor_step(cycle *out)
     trouble[0] = '\0';
     take_sample(&after);
     taken_after = now();
-    wall_after = wall();
+    asleep_after = asleep();
 
     /* Nothing raises across C, so the only failure after a good start is a sample with no
      * machine time. Keep the baseline, the next cycle covers this one too */
@@ -229,15 +234,14 @@ step_result monitor_step(cycle *out)
 
     joularcore_read(&reading);
 
-    /* Real cycle length, longer than the interval under load. Only the wall clock counts a
-     * sleep, so the gap between the two is how long the machine slept */
+    /* Real cycle length, longer than the interval under load */
     elapsed = taken_after - taken_before;
-    slept = (wall_after - wall_before) - elapsed;
+    slept = asleep_after - asleep_before;
 
     /* Next cycle's baseline, even if this one is dropped */
     before = after;
     taken_before = taken_after;
-    wall_before = wall_after;
+    asleep_before = asleep_after;
 
     if (slept > RESUME_SECONDS)
         return STEP_SKIPPED;
