@@ -8,6 +8,9 @@ on:
     branches: [ "main", "develop" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
 
   # Each job sets up the machine and runs the script for its system in packaging/, which builds, checks the program (--version and --help, no display needed) and makes the packages and installers in dist/. One artifact per job holds them all.
