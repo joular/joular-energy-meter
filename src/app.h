@@ -229,7 +229,7 @@ double history_peak(series s);
 /* Proposed by Export the first time */
 #define CSV_EXPORT_FILE "joularenergymeter-trend.csv"
 
-/* "<system_file>-<pid>.csv" or "<system_file>-<app>.csv" like PowerJoular; system_file
+/* power.csv gives power-<pid>.csv or power-<app>.csv like PowerJoular; system_file
  * for the whole system. Returns out. */
 const char *csv_target_file(const char *system_file, const target *t, char *out, size_t n);
 

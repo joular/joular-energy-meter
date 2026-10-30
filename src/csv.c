@@ -17,8 +17,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef PJ_WINDOWS
+#ifdef PJ_WINDOWS
+#include <windows.h>
+#define strcasecmp _stricmp
+#else
 #include <fcntl.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -47,12 +51,34 @@ static bool cannot_write(const char *name)
     return false;
 }
 
+#ifdef PJ_WINDOWS
+/* Paths are UTF-8, the ANSI calls would read them in the local code page */
+static bool wide(const char *path, wchar_t *out, int n)
+{
+    return MultiByteToWideChar(CP_UTF8, 0, path, -1, out, n) > 0;
+}
+
+/* Absolute path, NULL if it can't be resolved */
+static wchar_t *full_path(const char *path, wchar_t *out, int n)
+{
+    wchar_t w[PATH_MAX];
+
+    return wide(path, w, PATH_MAX) ? _wfullpath(out, w, (size_t)n) : NULL;
+}
+#endif
+
 /* Runs as root, so only write to a regular file with a single link, never through a symlink
  * that could point anywhere. Files created under sudo are chowned to SUDO_UID/SUDO_GID. */
 static FILE *open_csv(const char *name, bool append)
 {
 #ifdef PJ_WINDOWS
-    return fopen(name, append ? "a" : "w");
+    wchar_t w[PATH_MAX];
+
+    if (!wide(name, w, PATH_MAX)) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    return _wfopen(w, append ? L"a" : L"w");
 #else
     int flags = O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (append ? O_APPEND : 0);
     int fd = open(name, flags | O_CREAT | O_EXCL, 0644);
@@ -89,10 +115,15 @@ const char *csv_target_file(const char *system_file, const target *t, char *out,
 {
     char app[sizeof t->app];
     size_t i;
+    size_t stem = strlen(system_file);
+
+    /* power.csv gives power-144.csv: the name goes before a final .csv, as in PowerJoular */
+    if (stem > 4 && strcasecmp(system_file + stem - 4, ".csv") == 0)
+        stem -= 4;
 
     switch (t->kind) {
     case TARGET_PROCESS:
-        snprintf(out, n, "%s-%u.csv", system_file, t->pid);
+        snprintf(out, n, "%.*s-%u.csv", (int)stem, system_file, t->pid);
         break;
 
     case TARGET_APPLICATION:
@@ -103,7 +134,7 @@ const char *csv_target_file(const char *system_file, const target *t, char *out,
             app[i] = (c < 32 || strchr("/\\:*?\"<>|", c) != NULL) ? '_' : (char)c;
         }
         app[i] = '\0';
-        snprintf(out, n, "%s-%s.csv", system_file, app);
+        snprintf(out, n, "%.*s-%s.csv", (int)stem, system_file, app);
         break;
 
     default:
@@ -250,8 +281,8 @@ static int write_file(const char *name, bool of_target)
 static bool same_file(const char *a, const char *b)
 {
 #ifdef PJ_WINDOWS
-    char x[PATH_MAX], y[PATH_MAX];
-    return _fullpath(x, a, sizeof x) && _fullpath(y, b, sizeof y) && _stricmp(x, y) == 0;
+    wchar_t x[PATH_MAX], y[PATH_MAX];
+    return full_path(a, x, PATH_MAX) && full_path(b, y, PATH_MAX) && _wcsicmp(x, y) == 0;
 #else
     struct stat s, u;
     return stat(a, &s) == 0 && stat(b, &u) == 0 && s.st_dev == u.st_dev && s.st_ino == u.st_ino;
@@ -309,13 +340,17 @@ const char *csv_file_name(const char *path)
 
 bool csv_folder_of(const char *file, char *out, size_t n)
 {
-    char full[PATH_MAX];
     size_t len, root = 1;
-
 #ifdef PJ_WINDOWS
-    if (_fullpath(full, file, sizeof full) == NULL) return false;
+    wchar_t w[PATH_MAX];
+    char full[3 * PATH_MAX];   /* up to 3 UTF-8 bytes per UTF-16 unit */
+
+    if (full_path(file, w, PATH_MAX) == NULL
+        || WideCharToMultiByte(CP_UTF8, 0, w, -1, full, (int)sizeof full, NULL, NULL) <= 0) return false;
     if (full[1] == ':') root = 3;   /* C:\ */
 #else
+    char full[PATH_MAX];
+
     if (realpath(file, full) == NULL) return false;
 #endif
     len = (size_t)(csv_file_name(full) - full);

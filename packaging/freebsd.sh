@@ -7,8 +7,8 @@
 #   sudo pkg install gprbuild gnat15 sdl2
 #   export PATH=/usr/local/gnat15/bin:$PATH
 # and CPU Load and Joular Core checked out beside this folder, or in LIBS:
-#   git clone --depth 1 --branch 0.0.5 https://github.com/joular/cpuload.git
-#   git clone --depth 1 --branch 0.0.5 https://github.com/joular/joularcore.git
+#   git clone --depth 1 --branch 0.0.6 https://github.com/joular/cpuload.git
+#   git clone --depth 1 --branch 0.0.6 https://github.com/joular/joularcore.git
 #
 # Run from anywhere: packaging/freebsd.sh, or LIBS=<folder> packaging/freebsd.sh.
 # The package is for the FreeBSD version it's built on (pkg checks it).

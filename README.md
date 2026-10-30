@@ -76,8 +76,8 @@ You need GNAT and gprbuild, SDL2 (as above), and the two libraries next to this 
 
 ```bash
 cd ..
-git clone --depth 1 --branch 0.0.5 https://github.com/joular/cpuload.git
-git clone --depth 1 --branch 0.0.5 https://github.com/joular/joularcore.git
+git clone --depth 1 --branch 0.0.6 https://github.com/joular/cpuload.git
+git clone --depth 1 --branch 0.0.6 https://github.com/joular/joularcore.git
 cd joular-energy-meter
 gprbuild -P joularenergymeter.gpr -aP../joularcore -aP../cpuload -p
 ```
@@ -153,7 +153,7 @@ While measuring, the target and the file are locked, while the measurement inter
 
 The followed program's *Power* is its share of the processor's power only: the processor's power times the program's CPU load over the machine's, as PowerJoular counts it; the graphics card isn't attributed. *Share of CPU* is the fraction of the machine's processing capacity it used (all of one core out of eight is 12.5 %), not of the processor's power. *Share of total* divides its power by the machine's CPU + GPU power.
 
-When you follow a process or application, a *second* CSV file is written next to the first (`<file>-<pid>.csv` or `<file>-<name>.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
+When you follow a process or application, a *second* CSV file is written next to the first (`power-<pid>.csv` or `power-<name>.csv` for `power.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
 
 The interval goes from 1 to 10 s. Each cycle is divided by the time it really took, so changing it while measuring is fine. A cycle during which the machine slept is dropped. CSV timestamps are whole Unix seconds, as in PowerJoular.
 

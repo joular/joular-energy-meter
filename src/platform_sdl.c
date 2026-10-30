@@ -22,12 +22,14 @@
 
 #include <SDL2/SDL.h>
 
-#ifdef PJ_MACOS
-#include <IOKit/pwr_mgt/IOPMLib.h>
-#elif defined(PJ_WINDOWS)
+#ifdef PJ_WINDOWS
 #include <windows.h>
 #else
 #include <unistd.h>
+#endif
+
+#ifdef PJ_MACOS
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #endif
 
 #include "app.h"
@@ -448,13 +450,27 @@ void platform_set_clipboard(const char *text)
     if (SDL_SetClipboardText(text) != 0) sdl_error("clipboard");
 }
 
+/* Started from here, the browser would run as root or Administrator too */
+static bool privileged(void)
+{
+#ifdef PJ_WINDOWS
+    HANDLE token;
+    TOKEN_ELEVATION elevation = { 0 };
+    DWORD size;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return true;
+    if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof elevation, &size))
+        elevation.TokenIsElevated = 1;
+    CloseHandle(token);
+    return elevation.TokenIsElevated != 0;
+#else
+    return geteuid() == 0;
+#endif
+}
+
 bool platform_open_url(const char *url)
 {
-#if !defined(PJ_MACOS) && !defined(PJ_WINDOWS)
-    /* xdg-open would start the browser as root */
-    if (geteuid() == 0) return false;
-#endif
-    return SDL_OpenURL(url) == 0;
+    return !privileged() && SDL_OpenURL(url) == 0;
 }
 
 void platform_set_hand_cursor(bool hand)

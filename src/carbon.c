@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <SDL2/SDL.h>
+
 #ifdef PJ_WINDOWS
 #include <windows.h>
 #else
@@ -79,17 +81,16 @@ static int parse(char *text)
     return count;
 }
 
-/* Whole file into text, false if missing or too big */
+/* Whole file into text, false if missing or too big. SDL takes the UTF-8 path on Windows too,
+ * fopen would read it in the local code page */
 static bool read_file(const char *path, char *text, size_t n)
 {
-    FILE *f = fopen(path, "rb");
-    size_t got;
+    SDL_RWops *f = SDL_RWFromFile(path, "rb");
+    Sint64 size = f != NULL ? SDL_RWsize(f) : -1;
+    bool whole = size >= 0 && (size_t)size < n && SDL_RWread(f, text, 1, (size_t)size) == (size_t)size;
 
-    if (f == NULL) return false;
-    got = fread(text, 1, n - 1, f);
-    text[got] = '\0';
-    bool whole = feof(f) && !ferror(f);
-    fclose(f);
+    if (f != NULL) SDL_RWclose(f);
+    if (whole) text[size] = '\0';
     return whole;
 }
 

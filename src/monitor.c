@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef PJ_WINDOWS
 #include <windows.h>
@@ -94,18 +95,37 @@ static double asleep(void)
 #endif
 }
 
-/* No such process any more, so a later reading of the PID would be another program's. One
- * that runs but can't be read (another user's, on macOS and Windows) isn't gone. */
+/* No such process any more, or one that ended and isn't reaped yet, so a later reading of the
+ * PID would be another program's. One that runs but can't be read (another user's, on macOS
+ * and Windows) isn't gone. */
 static bool absent(unsigned int pid)
 {
 #ifdef PJ_WINDOWS
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    DWORD code;
+    bool ended;
 
     if (h == NULL) return GetLastError() == ERROR_INVALID_PARAMETER;
+    ended = GetExitCodeProcess(h, &code) && code != STILL_ACTIVE;
     CloseHandle(h);
-    return false;
+    return ended;
 #else
-    return pid > INT_MAX || (kill((pid_t)pid, 0) != 0 && errno == ESRCH);
+    if (pid > INT_MAX || (kill((pid_t)pid, 0) != 0 && errno == ESRCH)) return true;
+#ifdef PJ_LINUX
+    /* A zombie: "pid (name) Z ...", the name may hold a ')' */
+    char path[32], line[128] = "";
+    FILE *f;
+    const char *end;
+
+    snprintf(path, sizeof path, "/proc/%u/stat", pid);
+    if ((f = fopen(path, "r")) == NULL) return false;
+    if (fgets(line, sizeof line, f) == NULL) line[0] = '\0';
+    fclose(f);
+    end = strrchr(line, ')');
+    return end != NULL && end[1] == ' ' && end[2] == 'Z';
+#else
+    return false;
+#endif
 #endif
 }
 
