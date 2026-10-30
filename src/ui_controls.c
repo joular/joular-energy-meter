@@ -10,7 +10,8 @@
  */
 
 /* Top bar: target, interval, CSV recording, state lamp, Start/Stop and Pause.
- * Start validates the fields and passes the target to the display. */
+ * Start validates the fields and passes the target to the display. While measuring, the
+ * locked choices read as a sentence. */
 
 #include <limits.h>
 #include <stdio.h>
@@ -23,9 +24,14 @@
 LV_IMAGE_DECLARE(joular_logo_1x);
 LV_IMAGE_DECLARE(joular_logo_2x);
 
-static lv_obj_t *kind_picker, *pid_entry, *app_entry, *interval_picker;
-static lv_obj_t *record_switch, *record_name, *path_entry, *browse_key, *recording_note, *problem;
-static lv_obj_t *lamp, *run_word, *run_key, *pause_key;
+/* Each line's choices are in a box, hidden while measuring for the sentence beside it */
+static lv_obj_t *what_choices, *kind_picker, *pid_entry, *app_entry, *interval_picker;
+static lv_obj_t *what_lead, *what_name;
+static lv_obj_t *record_choices, *record_switch, *path_entry, *browse_key, *recording_label;
+static lv_obj_t *lamp, *run_word, *run_time, *run_count, *run_key, *pause_key;
+
+/* The banner shows a field error of ours, cleared by editing */
+static bool alarm_ours;
 
 /* -------------------------------------------------------------------------------------- */
 
@@ -59,23 +65,22 @@ static bool pid_of(const char *text, unsigned int *pid)
 
 /* -------------------------------------------------------------------------------------- */
 
-/* Error and recording note share the same spot, one hides the other */
 static void clear_problems(void)
 {
-    kit_show(problem, false);
-    kit_show(recording_note, true);
+    if (alarm_ours) ui_alarm_clear();
+    alarm_ours = false;
     kit_entry_set_invalid(pid_entry, false);
     kit_entry_set_invalid(app_entry, false);
     kit_entry_set_invalid(path_entry, false);
 }
 
-/* Warning sign so it doesn't rely on colour alone; marks and focuses the field */
+/* In the banner, which has a warning sign so it doesn't rely on colour alone; marks and
+ * focuses the field */
 static void show_problem(const char *text, lv_obj_t *field)
 {
     clear_problems();
-    lv_label_set_text_fmt(problem, LV_SYMBOL_WARNING " %s", text);
-    kit_show(problem, true);
-    kit_show(recording_note, false);
+    ui_alarm(text, "", "");
+    alarm_ours = true;
     kit_entry_set_invalid(field, true);
     lv_group_focus_obj(field);
 }
@@ -89,27 +94,49 @@ static void show_target_kind(void)
     clear_problems();
 }
 
-/* Editable only when idle and recording is on */
+/* Editable only when recording is on */
 static void show_path_enabled(void)
 {
-    bool editable = display_run() == RUN_IDLE && lv_obj_has_state(record_switch, LV_STATE_CHECKED);
+    bool editable = lv_obj_has_state(record_switch, LV_STATE_CHECKED);
 
     kit_enable(path_entry, editable);
     kit_enable(browse_key, editable);
 }
 
-static void show_recording_note(void)
+static void show_recording(void)
 {
     const char *file = csv_recording_file();
     char folder[PATH_MAX];
 
     if (!csv_is_recording())
-        kit_set_text(recording_note, "");
+        kit_set_text(recording_label, "Not recording");
     /* Can't resolve the folder, show the path as typed */
     else if (!csv_folder_of(file, folder, sizeof folder))
-        lv_label_set_text_fmt(recording_note, "Writing %s", file);
+        lv_label_set_text_fmt(recording_label, "Recording to %s", file);
     else
-        lv_label_set_text_fmt(recording_note, "Writing %s in %s", csv_file_name(file), folder);
+        lv_label_set_text_fmt(recording_label, "Recording to %s in %s", csv_file_name(file), folder);
+}
+
+/* "Measuring application firefox", "Measuring process 2814", "Measuring the whole machine" */
+static void show_what(const target *measured)
+{
+    char pid[16];
+
+    switch (measured->kind) {
+    case TARGET_PROCESS:
+        snprintf(pid, sizeof pid, "%u", measured->pid);
+        kit_set_text(what_lead, "Measuring process");
+        kit_set_text(what_name, pid);
+        break;
+    case TARGET_APPLICATION:
+        kit_set_text(what_lead, "Measuring application");
+        kit_set_text(what_name, measured->app);
+        break;
+    case TARGET_WHOLE_SYSTEM:
+        kit_set_text(what_lead, "Measuring");
+        kit_set_text(what_name, "the whole machine");
+        break;
+    }
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -161,6 +188,8 @@ static void start_session(void)
     }
 
     clear_problems();
+    show_what(&followed);
+    show_recording();
     display_start(&followed);
 }
 
@@ -210,7 +239,7 @@ static void on_browse(lv_event_t *e)
     LV_UNUSED(e);
     if (!trimmed(lv_textarea_get_text(path_entry), path, sizeof path) || path[0] == '\0')
         snprintf(path, sizeof path, "%s", CSV_DEFAULT_FILE);
-    kit_save_csv("Choose the file to record to", path, csv_file_name(path), true, chosen_record_file);
+    kit_save_csv("Choose the file to record to", path, csv_file_name(path), chosen_record_file);
 }
 
 static void on_record_switched(lv_event_t *e)
@@ -271,46 +300,55 @@ static void what_line(lv_obj_t *sentence)
     lv_obj_t *line = kit_box(sentence, false, 8);
 
     kit_let_out(line, 4);
-    kit_label(line, "Measure", TEXT_WORD);
-    kind_picker = kit_picker(line, "Whole machine\nProcess\nApplication", TARGET_WHOLE_SYSTEM,
+    what_choices = kit_box(line, false, 8);
+    kit_let_out(what_choices, 4);
+    kit_label(what_choices, "Measure", TEXT_WORD);
+    kind_picker = kit_picker(what_choices, "Whole machine\nProcess\nApplication", TARGET_WHOLE_SYSTEM,
                              on_kind_changed, NULL);
-    pid_entry = field(line, "Process ID", true, 120);
+    pid_entry = field(what_choices, "Process ID", true, 120);
     lv_textarea_set_max_length(pid_entry, 10);
-    app_entry = field(line, "Application name", false, 170);
+    app_entry = field(what_choices, "Application name", false, 150);
+
+    /* In their place while measuring, the name in ink, cut so the interval stays in view at
+     * the smallest window */
+    what_lead = kit_label(line, "", TEXT_WORD);
+    what_name = kit_lines(kit_label(line, "", TEXT_WORD), 1);
+    lv_obj_set_style_text_color(what_name, theme_color(TOKEN_TEXT), 0);
+    lv_obj_set_style_max_width(what_name, ui_px(140), 0);
     kit_label(line, "every", TEXT_WORD);
     interval_picker = kit_interval_picker(line, on_interval_changed, NULL);
 }
 
-/* "(o) Record to [joularenergymeter-power.csv]  Writing ..." */
+/* "(o) Record to [joularenergymeter-power.csv] [Browse]", or "Recording to ..." while
+ * measuring */
 static void record_line(lv_obj_t *sentence)
 {
-    lv_obj_t *line = kit_box(sentence, false, 8);
+    lv_obj_t *line = kit_box(sentence, false, 8), *name;
 
     lv_obj_set_width(line, LV_PCT(100));
     kit_let_out(line, 4);
-    record_switch = kit_switch(line, on_record_switched, NULL);
-    record_name = kit_label(line, "Record to", TEXT_WORD);
-    lv_obj_set_clickable(record_name, true);
-    lv_obj_add_event_cb(record_name, on_name_clicked, LV_EVENT_CLICKED, record_switch);
-    path_entry = field(line, CSV_DEFAULT_FILE, false, 236);
-    browse_key = kit_button(line, NULL, "Browse", BUTTON_NORMAL, on_browse, NULL);
-
-    /* Errors for all fields are shown here, near Start */
-    recording_note = kit_lines(kit_label(line, "", TEXT_CAPTION), 2);
-    lv_obj_set_flex_grow(recording_note, 1);
-    problem = kit_lines(kit_label(line, "", TEXT_ERROR), 2);
-    lv_obj_set_flex_grow(problem, 1);
+    record_choices = kit_box(line, false, 8);
+    kit_let_out(record_choices, 4);
+    record_switch = kit_switch(record_choices, on_record_switched, NULL);
+    name = kit_label(record_choices, "Record to", TEXT_WORD);
+    lv_obj_set_clickable(name, true);
+    lv_obj_add_event_cb(name, on_name_clicked, LV_EVENT_CLICKED, record_switch);
+    path_entry = field(record_choices, CSV_DEFAULT_FILE, false, 220);
+    browse_key = kit_button(record_choices, NULL, "Browse", BUTTON_NORMAL, on_browse, NULL);
+    recording_label = kit_lines(kit_label(line, "", TEXT_WORD), 1);
+    lv_obj_set_width(recording_label, 0);
+    lv_obj_set_flex_grow(recording_label, 1);
 }
 
 lv_obj_t *controls_create(lv_obj_t *parent)
 {
     lv_obj_t *bar = kit_box(parent, false, 20);
-    lv_obj_t *brand, *logo, *name, *sentence, *keys;
+    lv_obj_t *brand, *logo, *name, *sentence, *keys, *status, *line;
 
     lv_obj_add_style(bar, &styles.bar, 0);
     lv_obj_set_width(bar, LV_PCT(100));
     lv_obj_set_style_pad_hor(bar, ui_px(UI_GUTTER + 4), 0);
-    lv_obj_set_style_pad_ver(bar, ui_px(12), 0);
+    lv_obj_set_style_pad_ver(bar, ui_px(10), 0);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     kit_let_out(bar, 4);
 
@@ -333,13 +371,19 @@ lv_obj_t *controls_create(lv_obj_t *parent)
     what_line(sentence);
     record_line(sentence);
 
-    /* Lamp and state, Pause (only while running), Start/Stop */
+    /* Lamp, state with the time and count under it, Pause (only while running), Start/Stop */
     keys = kit_box(bar, false, 10);
     lv_obj_set_height(keys, ui_px(32 + 8 + 32));
     kit_let_out(keys, 4);
     lamp = kit_lamp(keys);
-    run_word = kit_label(keys, "", TEXT_BODY);
-    lv_obj_set_style_margin_right(run_word, ui_px(8), 0);
+    status = kit_box(keys, true, 2);
+    lv_obj_set_style_margin_right(status, ui_px(8), 0);
+    line = kit_box(status, false, 8);
+    run_word = kit_label(line, "", TEXT_TITLE);
+    run_time = kit_label(line, "", TEXT_FIGURES);
+    /* Fixed width, so a new count doesn't resize the bar */
+    run_count = kit_lines(kit_label(status, "", TEXT_CAPTION), 1);
+    lv_obj_set_width(run_count, ui_px(190));
     pause_key = kit_button(keys, LV_SYMBOL_PAUSE, "Pause", BUTTON_NORMAL, on_pause, NULL);
     lv_obj_set_height(pause_key, ui_px(40));
     run_key = kit_button(keys, LV_SYMBOL_PLAY, "Start", BUTTON_GO, on_run, NULL);
@@ -347,13 +391,14 @@ lv_obj_t *controls_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(run_key, ui_font(16), 0);
 
     show_target_kind();
-    controls_show_run(RUN_IDLE);
+    show_path_enabled();
+    controls_show_run(RUN_IDLE, false);
     /* So Enter starts right away; no ring until the keyboard moves focus */
     lv_group_focus_obj(run_key);
     return bar;
 }
 
-void controls_show_run(run_state run)
+void controls_show_run(run_state run, bool stopped)
 {
     static const struct { const char *word; theme_token color; bool lit; } looks[] = {
         [RUN_IDLE] = { "Ready", TOKEN_LAMP_OFF, false },
@@ -362,10 +407,12 @@ void controls_show_run(run_state run)
         [RUN_PAUSED] = { "Paused", TOKEN_LAMP_WAIT, false },
     };
     bool idle = run == RUN_IDLE, paused = run == RUN_PAUSED;
+    bool counted = stopped || run == RUN_LIVE || paused;
 
     kit_lamp_set(lamp, looks[run].color, looks[run].lit);
-    /* "Stopped" when the last session's values are still shown */
-    kit_set_text(run_word, idle && history_count() > 0 ? "Stopped" : looks[run].word);
+    kit_set_text(run_word, stopped ? "Stopped" : looks[run].word);
+    kit_show(run_time, counted);
+    kit_show(run_count, counted);
 
     kit_button_set(run_key, idle ? LV_SYMBOL_PLAY : LV_SYMBOL_STOP, idle ? "Start" : "Stop",
                    idle ? BUTTON_GO : BUTTON_HALT);
@@ -373,11 +420,23 @@ void controls_show_run(run_state run)
                    BUTTON_NORMAL);
     kit_show(pause_key, run == RUN_LIVE || paused);
 
-    /* Locked while a session runs */
-    kit_enable(kind_picker, idle);
-    kit_enable(pid_entry, idle);
-    kit_enable(app_entry, idle);
-    kit_enable(record_switch, idle);
-    show_path_enabled();
-    show_recording_note();
+    /* Choices while idle, a sentence of what is measured while a session runs */
+    kit_show(what_choices, idle);
+    kit_show(what_lead, !idle);
+    kit_show(what_name, !idle);
+    kit_show(record_choices, idle);
+    kit_show(recording_label, !idle);
+}
+
+void controls_show_progress(double elapsed, int samples, int missed)
+{
+    char text[48];
+    const char *word = samples == 1 ? "measurement" : "measurements";
+
+    kit_set_text(run_time, fmt_clock(text, sizeof text, elapsed));
+    if (missed > 0)
+        snprintf(text, sizeof text, "%d %s, %d missed", samples, word, missed);
+    else
+        snprintf(text, sizeof text, "%d %s%s", samples, word, samples > 0 ? ", none missed" : "");
+    kit_set_text(run_count, text);
 }

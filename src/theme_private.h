@@ -21,7 +21,7 @@
 
 /* Text colours */
 typedef enum {
-    TONE_TEXT, TONE_MUTED, TONE_FAINT, TONE_ERROR, TONE_ACCENT, TONE_WHEEL,
+    TONE_TEXT, TONE_MUTED, TONE_FAINT, TONE_ACCENT,
     TONE_COUNT
 } text_tone;
 
@@ -32,12 +32,12 @@ typedef struct theme_styles {
     lv_style_t tone[TONE_COUNT];
     lv_style_t motion;
     lv_style_t key, key_hover, key_pressed, go, go_hover, go_pressed, halt, halt_hover, halt_pressed;
+    lv_style_t chosen, chosen_hover, chosen_pressed;
     lv_style_t disabled, off, focus_ring;
     lv_style_t picker, picker_hover, picker_pressed;
     lv_style_t entry, entry_focused, entry_invalid, placeholder, cursor;
     lv_style_t switch_track, switch_on, knob;
     lv_style_t menu, menu_hover, menu_checked;
-    lv_style_t wheel, wheel_red, slot;
     lv_style_t lamp, alarm, message_new, message_trouble, link_hover;
     lv_style_t scrollbar;
 } theme_styles;

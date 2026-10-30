@@ -9,10 +9,9 @@
  * Author : Adel Noureddine
  */
 
-/* Display: meter, trend, register and the session's reading rows. Reports from the
- * measuring thread arrive here on the main thread. */
+/* Display: readings, breakdown, carbon intensity and the chart. Reports from the measuring
+ * thread arrive here on the main thread. */
 
-#include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -29,33 +28,30 @@
 /* Series colours, in series enum order */
 static const theme_token pen[] = { TOKEN_TOTAL, TOKEN_CPU, TOKEN_GPU, TOKEN_TARGET };
 
-/* Register wheels: six for whole units, the red one for tenths */
-#define WHEELS 7
+/* Least plot height, logical px: below it the column scrolls */
+#define PLOT_MIN 96
 
-/* Widths of the two value columns in the rows, logical pixels */
-#define NOW_WIDTH 76
-#define SINCE_WIDTH 88
+/* Breakdown columns, logical px */
+#define NOW_WIDTH 90
+#define ENERGY_WIDTH 120
+#define SHARE_WIDTH 110
 
-/* Reading rows: name, value now, energy since start */
-enum { ROW_CPU, ROW_GPU, ROW_LOAD, ROW_TARGET, ROW_SHARE, ROW_TOTAL_SHARE, ROW_CARBON, ROW_TARGET_CARBON, ROW_COUNT };
+/* A reading: name and note over its figures, each a caption over a number and its unit */
+enum { FIG_POWER, FIG_ENERGY, FIG_CARBON, FIG_COUNT };
 
-typedef struct row {
-    lv_obj_t *box, *name, *now, *since;
-} row;
+typedef struct reading {
+    lv_obj_t *box, *dot, *name, *note;
+    lv_obj_t *caption[FIG_COUNT], *number[FIG_COUNT], *unit[FIG_COUNT];
+} reading;
 
-static row rows[ROW_COUNT];
+/* The followed program, or the machine when none is; then the machine beside it */
+static reading first, second;
 
-/* CPU/GPU split of the machine's power, a bar and a key with each share. Only shown with
- * a GPU. */
-enum { SPLIT_CPU, SPLIT_GPU, SPLIT_COUNT };
-static lv_obj_t *split_box, *split_part[SPLIT_COUNT], *split_key[SPLIT_COUNT], *split_share[SPLIT_COUNT];
-
-/* Session stats, each under its name */
-enum { STAT_AVERAGE, STAT_SPREAD, STAT_HIGHEST, STAT_LOWEST, STAT_YEAR, STAT_SAMPLES, STAT_COUNT };
-static const char *const stat_names[STAT_COUNT] = {
-    "Average", "Standard deviation", "Highest", "Lowest", "A year at this average", "Measurements",
-};
-static lv_obj_t *session_panel, *stat_name[STAT_COUNT], *stat_value[STAT_COUNT];
+/* Processor and graphics card */
+enum { PART_CPU, PART_GPU, PART_COUNT };
+static const series part_series[PART_COUNT] = { SERIES_CPU, SERIES_GPU };
+static lv_obj_t *parts_row, *breakdown, *head_now, *head_energy;
+static lv_obj_t *part_now[PART_COUNT], *part_energy[PART_COUNT], *part_share[PART_COUNT];
 
 /* Electricity the emissions are counted for: a country's average, one energy source, or a
  * typed value. Emissions are worked out again from the last measurement when it changes. */
@@ -65,41 +61,30 @@ static double grams_per_kwh;   /* negative when no value is typed */
 static cycle last_cycle;
 static totals last_sum;
 
-/* Machine power over the session: mean and Welford's running sum of squares, highest and
- * lowest with their times, and the count of dropped or failed measurements */
-static double mean, squares, weight, measured, peak, low;
-static int64_t peak_taken, low_taken;
+/* Power of each series over the session: mean and Welford's running sum of squares */
+static struct { double mean, squares, weight; } spread[4];
 static int missed;
 
-/* Meter: machine power, followed program's power beside it, register above the disc that
- * turns with the machine's energy */
-static lv_obj_t *reading, *second_box, *second_name, *second, *disc;
-static lv_obj_t *target_panel;
-static double joules_per_turn;   /* 0 until the first measurement sets it */
-static double turns, counted;    /* disc turns so far, and the energy they represent */
-
-/* Register and its labels */
-static lv_obj_t *wheels, *wheels_unit, *clock_label, *watt_hours;
-static int register_unit = -1;
-
-static lv_obj_t *alarm_strip, *alarm_title, *alarm_text, *copy_button;
-static char alarm_command[1024];
-
-static lv_obj_t *span_label, *export_key, *cpu_key, *gpu_key, *target_key, *target_key_name;
-static lv_obj_t *scale, *chart, *chart_note, *ago_far, *ago_mid;
+/* Chart of one series, chosen above it, and the caption under it */
+static lv_obj_t *choices[4], *range_label, *scale, *chart, *chart_note, *ago_far, *ago_mid, *ago_end;
+static lv_obj_t *items[3];
 static lv_chart_series_t *lines[4];
+static series shown = SERIES_TOTAL;
 
 /* Band labels, static as lv_scale keeps the pointers */
 static char band_text[5][16];
 static const char *band_labels[6];
 
 static target session_target;
-static char heading[160];   /* "Whole machine", "Process 2814", "Application firefox" */
+static char heading[160];      /* "Whole machine", "Process 2814", "Application firefox" */
+static char target_trouble[128];   /* why the followed program wasn't read at the last cycle */
 static int samples;
 static run_state run = RUN_IDLE;
 static bool has_cpu, has_gpu, load_reads;
 static bool target_lost;   /* followed program unreadable at the last cycle */
 static bool csv_failed;    /* the last CSV row couldn't be written, said once */
+
+static void refresh_chart(void);
 
 /* -------------------------------------------------------------------------------------- */
 /* Text                                                                                   */
@@ -116,17 +101,23 @@ static bool cpu_expected(void)
     return has_cpu || run == RUN_STARTING;
 }
 
-/* "90 s ago", "2 min ago" or "now", for back seconds */
-static char *ago(char *buf, size_t n, double back)
+/* The last session's values are still shown */
+static bool stopped(void)
+{
+    return run == RUN_IDLE && samples > 0;
+}
+
+/* "90 s ago", "2 min before" or "now", for back seconds */
+static char *ago(char *buf, size_t n, double back, const char *word)
 {
     int seconds = (int)back;
 
     if (seconds == 0)
         snprintf(buf, n, "now");
     else if (seconds >= 60 && seconds % 60 == 0)
-        snprintf(buf, n, "%d min ago", seconds / 60);
+        snprintf(buf, n, "%d min %s", seconds / 60, word);
     else
-        snprintf(buf, n, "%d s ago", seconds);
+        snprintf(buf, n, "%d s %s", seconds, word);
     return buf;
 }
 
@@ -181,6 +172,158 @@ static int decimals_of(double step)
     return 3;
 }
 
+/* Watts as a number and its unit: mW under 1 W, so a small program never reads 0.0 */
+static char *power_text(char *buf, size_t n, double watts, const char **unit)
+{
+    double milli = watts * 1000.0;
+
+    *unit = watts > 0.0 && watts < 0.9995 ? "mW" : "W";
+    if (watts <= 0.0)
+        snprintf(buf, n, "0");
+    else if (milli < 0.05)
+        snprintf(buf, n, "<0.1");
+    else if (milli < 9.95)
+        fmt_number(buf, n, milli, 1);
+    else if (watts < 0.9995)
+        fmt_number(buf, n, milli, 0);
+    else
+        fmt_number(buf, n, watts, 1);
+    return buf;
+}
+
+static const char *const joule_units[] = { "J", "kJ", "MJ", "GJ" };
+static const char *const gram_units[] = { "mg", "g", "kg", "t" };
+
+/* At most three digits before the point and four in all, so a long session's total keeps the
+ * same precision. Each unit is 1000 of the one before. */
+static char *scaled_text(char *buf, size_t n, double value, const char *const units[4], const char **unit)
+{
+    int u = 0;
+
+    /* 999.95 and up would round to 1000.0 */
+    while (value >= 999.95 && u < 3) {
+        value /= 1000.0;
+        u++;
+    }
+    *unit = units[u];
+    return fmt_number(buf, n, value, value < 9.9995 ? 3 : value < 99.995 ? 2 : 1);
+}
+
+/* A year at watts, in kWh, then MWh */
+static char *year_text(char *buf, size_t n, double watts, const char **unit)
+{
+    /* Hours in a 365.25 day year, in thousands, for kWh */
+    double year = watts * 8.766;
+
+    if (year >= 9999.5) {
+        *unit = "MWh";
+        return fmt_number(buf, n, year / 1000.0, year < 99995.0 ? 2 : 1);
+    }
+    *unit = "kWh";
+    return fmt_number(buf, n, year, year < 9.995 ? 2 : year < 99.95 ? 1 : 0);
+}
+
+/* Part of whole in per cent, one decimal, never 0 or 100 when it isn't */
+static char *share_text(char *buf, size_t n, double part, double whole)
+{
+    double percent = 100.0 * part / whole;
+
+    if (part > 0.0 && percent < 0.05)
+        snprintf(buf, n, "<0.1");
+    else if (part < whole && percent >= 99.95)
+        snprintf(buf, n, ">99.9");
+    else
+        fmt_number(buf, n, percent, 1);
+    return buf;
+}
+
+/* Time of day of a measurement (Unix time in the CSV) */
+static char *time_of(char *buf, size_t n, int64_t taken)
+{
+    time_t t = (time_t)taken;
+    const struct tm *local = localtime(&t);
+
+    if (local == NULL || strftime(buf, n, "%H:%M:%S", local) == 0) snprintf(buf, n, "an unknown time");
+    return buf;
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Values                                                                                 */
+/* -------------------------------------------------------------------------------------- */
+
+/* Whether the hardware gives the series */
+static bool readable(series s)
+{
+    switch (s) {
+    case SERIES_CPU:
+        return has_cpu;
+    case SERIES_GPU:
+        return has_gpu;
+    case SERIES_TARGET:
+        return has_cpu && follows();
+    default:
+        return has_cpu || has_gpu;
+    }
+}
+
+static double power_of(const cycle *data, series s)
+{
+    history_point p = { .data = *data };
+
+    return history_value(&p, s);
+}
+
+static double energy_of(const totals *sum, series s)
+{
+    switch (s) {
+    case SERIES_CPU:
+        return sum->cpu_energy;
+    case SERIES_GPU:
+        return sum->gpu_energy;
+    case SERIES_TARGET:
+        return sum->target_energy;
+    default:
+        return sum->total_energy;
+    }
+}
+
+/* Measured, and for the followed program read at least once */
+static bool counted(series s)
+{
+    return samples > 0 && readable(s) && (s != SERIES_TARGET || last_sum.target_read);
+}
+
+/* Energy over the measured time, as the readings show after Stop. Negative when there is none
+ * yet. The followed program's counts the time it wasn't running, so energy = average x time. */
+static double average_of(series s)
+{
+    return counted(s) && last_sum.elapsed > 0.0 ? energy_of(&last_sum, s) / last_sum.elapsed : -1.0;
+}
+
+/* Power now, or the average after Stop */
+static double reading_of(series s)
+{
+    return stopped() ? average_of(s) : power_of(&last_cycle, s);
+}
+
+/* Each measurement weighted by the time it covers, so the spread is around the average
+ * (energy over time). West's weighted Welford. Before last_sum takes sum. */
+static void add_to_spread(const cycle *data, const totals *sum)
+{
+    double span = sum->elapsed - last_sum.elapsed;
+
+    if (span <= 0.0) return;
+    for (int s = 0; s < 4; s++) {
+        double watts = power_of(data, (series)s), delta;
+
+        if (watts < 0.0 || !readable((series)s)) continue;
+        delta = watts - spread[s].mean;
+        spread[s].weight += span;
+        spread[s].mean += delta * span / spread[s].weight;
+        spread[s].squares += span * delta * (watts - spread[s].mean);
+    }
+}
+
 /* -------------------------------------------------------------------------------------- */
 /* Showing things                                                                         */
 /* -------------------------------------------------------------------------------------- */
@@ -191,192 +334,235 @@ static void on_baseline(lv_obj_t *label, const lv_font_t *large, const lv_font_t
     lv_obj_set_style_pad_bottom(label, large->base_line - small->base_line, 0);
 }
 
-/* Fresh values in ink; held ones (Pause, Stop) or none yet in the muted colour */
-static void show_fresh(void)
+/* Colour for a label's recolour marks, "#rrggbb text#" */
+static char *hex_of(char *buf, size_t n, theme_token t)
 {
-    static int shown = -1;
-    bool live = run == RUN_LIVE;
+    lv_color_t c = theme_color(t);
 
-    if (shown == (int)live) return;
-    shown = live;
-    lv_obj_set_style_text_color(reading, theme_color(live ? TOKEN_TEXT : TOKEN_MUTED), 0);
-    lv_obj_set_style_text_color(second, theme_color(live ? TOKEN_TARGET : TOKEN_MUTED), 0);
-    for (int i = 0; i < ROW_COUNT; i++)
-        lv_obj_set_style_text_color(rows[i].now, theme_color(live ? TOKEN_TEXT : TOKEN_MUTED), 0);
+    snprintf(buf, n, "%02x%02x%02x", c.red, c.green, c.blue);
+    return buf;
 }
 
-/* Number with its unit in the muted colour; NULL number shows nothing */
+/* Number with its unit in the muted colour; NULL number shows a dash */
 static void show_figure(lv_obj_t *label, const char *number, const char *unit)
 {
-    static char muted[8];
-    char text[64];
+    char text[64], muted[8];
 
     if (number == NULL) {
         kit_set_text(label, NOTHING);
         return;
     }
-    if (muted[0] == '\0') {
-        lv_color_t c = theme_color(TOKEN_MUTED);
-        snprintf(muted, sizeof muted, "%02x%02x%02x", c.red, c.green, c.blue);
-    }
-    snprintf(text, sizeof text, "%s #%s %s#", number, muted, unit);
+    snprintf(text, sizeof text, "%s #%s %s#", number, hex_of(muted, sizeof muted, TOKEN_MUTED), unit);
     kit_set_text(label, text);
 }
 
-static void show_watts(lv_obj_t *label, double watts, bool available)
+/* A reading's number and unit, in their own labels; NULL number shows a dash */
+static void show_pair(reading *r, int which, const char *number, const char *unit)
+{
+    kit_set_text(r->number[which], number ? number : NOTHING);
+    kit_set_text(r->unit[which], number ? unit : "");
+}
+
+/* Power now, or the average after Stop, then energy and emissions since start. Grams per kWh
+ * over 3600 are milligrams per joule. */
+static void show_reading(reading *r, series s)
 {
     char text[32];
+    const char *unit = "";
+    double watts = reading_of(s), joules = energy_of(&last_sum, s);
+    bool has = counted(s);
 
-    show_figure(label, available && watts >= 0.0 ? fmt_number(text, sizeof text, watts, 1) : NULL, "W");
+    show_pair(r, FIG_POWER, has && watts >= 0.0 ? power_text(text, sizeof text, watts, &unit) : NULL, unit);
+    show_pair(r, FIG_ENERGY, has ? scaled_text(text, sizeof text, joules, joule_units, &unit) : NULL, unit);
+    show_pair(r, FIG_CARBON, has && grams_per_kwh >= 0.0
+                                 ? scaled_text(text, sizeof text, joules * grams_per_kwh / 3600.0, gram_units, &unit)
+                                 : NULL, unit);
 }
 
-/* Share of the whole machine; negative means unreadable */
-static void show_load(lv_obj_t *label, double load)
+/* The followed program's share of the machine, or why it wasn't read */
+static void show_note(void)
+{
+    char share[16], text[200] = "";
+
+    if (!follows() || samples == 0 || !has_cpu)
+        ;
+    else if (stopped()) {
+        if (last_sum.target_read && last_sum.total_energy > 0.0)
+            snprintf(text, sizeof text, "%s %% of the machine's energy",
+                     share_text(share, sizeof share, last_sum.target_energy, last_sum.total_energy));
+    } else if (last_cycle.target_power < 0.0) {
+        if (target_trouble[0])
+            snprintf(text, sizeof text, "Not read: %s", target_trouble);
+        else
+            snprintf(text, sizeof text, "Not running");
+    } else if (last_cycle.total_power > 0.0) {
+        snprintf(text, sizeof text, "%s %% of the machine's power",
+                 share_text(share, sizeof share, last_cycle.target_power, last_cycle.total_power));
+    }
+    kit_set_text(first.note, text);
+}
+
+/* Each part's share of the machine in whole per cent, adding up to 100; a part drawing
+ * anything never shows 0 */
+static void show_shares(double cpu, double gpu, double total)
+{
+    double part[PART_COUNT] = { cpu, gpu };
+    long cpu_percent = total > 0.0 ? lround(100.0 * cpu / total) : 0;
+    long percent[PART_COUNT] = { cpu_percent, 100 - cpu_percent };
+    char text[16];
+
+    for (int i = 0; i < PART_COUNT; i++) {
+        if (total <= 0.0 || !readable(part_series[i]))
+            show_figure(part_share[i], NULL, "%");
+        else if (part[i] > 0.0 && percent[i] == 0)
+            show_figure(part_share[i], "<1", "%");
+        else if (part[i] < total && percent[i] == 100)
+            show_figure(part_share[i], ">99", "%");
+        else {
+            snprintf(text, sizeof text, "%ld", percent[i]);
+            show_figure(part_share[i], text, "%");
+        }
+    }
+}
+
+/* Processor and graphics card: power now (average after Stop), energy, share of the
+ * machine's power (of its energy after Stop) */
+static void show_breakdown(void)
 {
     char text[32];
+    const char *unit = "";
 
-    show_figure(label, load >= 0.0 ? fmt_number(text, sizeof text, 100.0 * load, 1) : NULL, "%");
-}
+    for (int i = 0; i < PART_COUNT; i++) {
+        series s = part_series[i];
+        bool has = counted(s);
+        double watts = reading_of(s);
 
-static const char *const joule_units[] = { "J", "kJ", "MJ", "GJ" };
-static const char *const gram_units[] = { "mg", "g", "kg", "t" };
-
-/* At most three digits before the point and four in all, so a long session's total fits its
- * column and keeps the same precision. Each unit is 1000 of the one before. */
-static void show_scaled(lv_obj_t *label, double value, const char *const units[4], bool available)
-{
-    char number[32];
-    int unit = 0;
-
-    /* 999.95 and up would round to 1000.0 */
-    while (value >= 999.95 && unit < 3) {
-        value /= 1000.0;
-        unit++;
+        show_figure(part_now[i], has && watts >= 0.0 ? power_text(text, sizeof text, watts, &unit) : NULL, unit);
+        show_figure(part_energy[i], has ? scaled_text(text, sizeof text, energy_of(&last_sum, s), joule_units, &unit)
+                                        : NULL, unit);
     }
-    show_figure(label, available ? fmt_number(number, sizeof number, value, value < 9.9995 ? 3 : value < 99.995 ? 2 : 1)
-                                 : NULL, units[unit]);
+    if (stopped())
+        show_shares(last_sum.cpu_energy, last_sum.gpu_energy, last_sum.total_energy);
+    else
+        show_shares(last_cycle.cpu_power, last_cycle.gpu_power, last_cycle.total_power);
 }
 
-/* Three figures, as mg/h would not fit the column; kg/h from 1000 g/h */
-static void show_rate(lv_obj_t *label, double grams_an_hour, bool available)
+/* Caption item: name in the muted colour, value in ink; NULL name hides it */
+static void show_item(int i, const char *name, const char *value)
 {
-    char number[32];
-    bool kilos = grams_an_hour >= 999.5;
-    double value = kilos ? grams_an_hour / 1000.0 : grams_an_hour;
+    char text[128], ink[8];
 
-    show_figure(label, available ? fmt_number(number, sizeof number, value, value < 9.995 ? 2 : value < 99.95 ? 1 : 0)
-                                 : NULL, kilos ? "kg/h" : "g/h");
-}
-
-/* Watts and joules to CO2e for the chosen electricity, from the last measurement */
-static void show_carbon(void)
-{
-    bool known = grams_per_kwh >= 0.0 && samples > 0, has_power = has_cpu || has_gpu;
-    /* g an hour per W, and mg per J */
-    double hourly = grams_per_kwh / 1000.0, per_joule = grams_per_kwh / 3600.0;
-
-    show_rate(rows[ROW_CARBON].now, last_cycle.total_power * hourly, known && has_power);
-    show_scaled(rows[ROW_CARBON].since, last_sum.total_energy * per_joule, gram_units, known && has_power);
-    show_rate(rows[ROW_TARGET_CARBON].now, last_cycle.target_power * hourly,
-              known && has_cpu && last_cycle.target_power >= 0.0);
-    show_scaled(rows[ROW_TARGET_CARBON].since, last_sum.target_energy * per_joule, gram_units,
-                known && has_cpu && last_sum.target_read);
-}
-
-/* Joules to the tenth on six wheels plus the red one, then kJ and so on. Wheels roll only
- * while the unit stays the same */
-static void show_register(double joules, bool roll)
-{
-    static const char *const units[] = { "J", "kJ", "MJ", "GJ" };
-    char digits[32], text[32];
-    int unit = 0;
-    double wh = joules / 3600.0;
-
-    while (joules >= 999999.95 && unit < 3) {
-        joules /= 1000.0;
-        unit++;
+    if (name == NULL) {
+        kit_show(items[i], false);
+        return;
     }
-    snprintf(digits, sizeof digits, "%08.1f", fmin(joules, 999999.9));
-    /* Drop the point, the red wheel is the tenths */
-    memmove(digits + 6, digits + 7, 2);
-    kit_register_set(wheels, digits, roll && unit == register_unit);
-    if (unit != register_unit) {
-        register_unit = unit;
-        kit_set_text(wheels_unit, units[unit]);
-    }
-    /* Same ranging as the row energies: four figures, then kWh and MWh */
-    static const char *const wh_units[] = { "Wh", "kWh", "MWh" };
-    int wh_unit = 0;
-    while (wh >= 999.95 && wh_unit < 2) {
-        wh /= 1000.0;
-        wh_unit++;
-    }
-    show_figure(watt_hours, fmt_number(text, sizeof text, wh, wh < 9.9995 ? 3 : wh < 99.995 ? 2 : 1), wh_units[wh_unit]);
+    snprintf(text, sizeof text, "%s  #%s %s#", name, hex_of(ink, sizeof ink, TOKEN_TEXT), value);
+    kit_set_text(items[i], text);
+    kit_show(items[i], true);
 }
 
-/* Turn the disc by each sample's energy */
-static void turn_disc(double joules, bool roll)
+/* Under the chart, for its series: CPU load (the program's share of CPU), spread and a year
+ * at the average */
+static void show_items(void)
 {
-    double step = joules - counted;
+    char number[32], value[48];
+    const char *unit = "";
+    bool held = run == RUN_PAUSED || stopped();
+    double load = shown == SERIES_TARGET ? last_cycle.target_usage : last_cycle.cpu_usage;
+    double average = average_of(shown);
+    int n = 0;
 
-    if (step <= 0.0) return;
-    /* A turn is a round number of joules, about 8 samples per turn. Picked again if the power
-     * changes so much that a sample would spin it or barely move it */
-    if (joules_per_turn == 0.0 || step > joules_per_turn / 2.0 || step < joules_per_turn / 64.0)
-        joules_per_turn = nice_step(8.0 * step);
-    turns += step / joules_per_turn;
-    counted = joules;
-    kit_disc_turn(disc, turns, roll);
+    if (samples > 0 && load_reads && shown != SERIES_GPU && load >= 0.0) {
+        snprintf(value, sizeof value, "%s %%", fmt_number(number, sizeof number, 100.0 * load, 1));
+        if (shown == SERIES_TARGET)
+            show_item(n++, held ? "Share of CPU, last reading" : "Share of CPU now", value);
+        else
+            show_item(n++, held ? "CPU load, last reading" : "CPU load now", value);
+    }
+    if (samples > 1 && counted(shown) && spread[shown].weight > 0.0) {
+        power_text(number, sizeof number, sqrt(spread[shown].squares / spread[shown].weight), &unit);
+        snprintf(value, sizeof value, "%s %s", number, unit);
+        show_item(n++, "Spread since start", value);
+    }
+    if (average >= 0.0) {
+        year_text(number, sizeof number, average, &unit);
+        snprintf(value, sizeof value, "%s %s", number, unit);
+        show_item(n++, "A year at this average", value);
+    }
+    while (n < 3) show_item(n++, NULL, NULL);
 }
 
+static void show_readings(void)
+{
+    show_reading(&first, follows() ? SERIES_TARGET : SERIES_TOTAL);
+    if (follows()) show_reading(&second, SERIES_TOTAL);
+    show_note();
+    show_breakdown();
+    show_items();
+}
+
+/* Captions follow the run: now, the last reading while paused, the average after Stop */
+static void show_captions(void)
+{
+    const char *power = stopped() ? "Average" : run == RUN_PAUSED ? "Last reading" : "Now";
+    const char *energy = stopped() ? "Energy" : "Energy since start";
+    const char *carbon = stopped() ? "Carbon" : "Carbon since start";
+    reading *both[] = { &first, &second };
+
+    for (int i = 0; i < 2; i++) {
+        kit_set_text(both[i]->caption[FIG_POWER], power);
+        kit_set_text(both[i]->caption[FIG_ENERGY], energy);
+        kit_set_text(both[i]->caption[FIG_CARBON], carbon);
+    }
+    kit_set_text(head_now, power);
+    kit_set_text(head_energy, energy);
+}
+
+/* Held values in the muted colour while paused */
+static void show_fresh(void)
+{
+    lv_color_t ink = theme_color(run == RUN_PAUSED ? TOKEN_MUTED : TOKEN_TEXT);
+
+    lv_obj_set_style_text_color(first.number[FIG_POWER], ink, 0);
+    lv_obj_set_style_text_color(second.number[FIG_POWER], ink, 0);
+    for (int i = 0; i < PART_COUNT; i++) lv_obj_set_style_text_color(part_now[i], ink, 0);
+}
+
+/* Chart span over the choices, time labels under it */
 static void show_span(void)
 {
-    char text[32];
+    char text[32], words[64];
     double span = history_span();
+    const char *word = run == RUN_PAUSED || stopped() ? "before" : "ago";
 
-    lv_label_set_text_fmt(span_label, "Trend, last %s", fmt_span(text, sizeof text, span));
-    lv_label_set_text(ago_far, ago(text, sizeof text, span));
-    lv_label_set_text(ago_mid, ago(text, sizeof text, span / 2.0));
-}
-
-/* Measurement count, and how many were missed */
-static void show_samples(void)
-{
-    char text[48];
-
-    lv_label_set_text_fmt(stat_value[STAT_SAMPLES], "%d", samples);
-    if (missed > 0)
-        snprintf(text, sizeof text, "%s, %d missed", stat_names[STAT_SAMPLES], missed);
+    fmt_span(text, sizeof text, span);
+    if (run == RUN_PAUSED)
+        snprintf(words, sizeof words, "The %s before the pause", text);
+    else if (stopped())
+        snprintf(words, sizeof words, "The %s before Stop", text);
     else
-        snprintf(text, sizeof text, "%s%s", stat_names[STAT_SAMPLES], samples > 0 ? ", none missed" : "");
-    kit_set_text(stat_name[STAT_SAMPLES], text);
+        snprintf(words, sizeof words, "Last %s", text);
+    kit_set_text(range_label, words);
+    kit_set_text(ago_far, ago(text, sizeof text, span, word));
+    kit_set_text(ago_mid, ago(text, sizeof text, span / 2.0, word));
+    kit_set_text(ago_end, run == RUN_PAUSED ? "Pause" : stopped() ? "Stop" : "now");
 }
 
-/* Lamp, buttons and readings follow the run state */
+/* Lamp, buttons, readings and chart follow the run state */
 static void set_run(run_state now)
 {
     run = now;
-    show_fresh();
     /* Keep the machine from sleeping during a run */
     platform_keep_awake(run == RUN_STARTING || run == RUN_LIVE);
-    kit_enable(export_key, history_count() > 0);
-    controls_show_run(run);
+    controls_show_run(run, stopped());
+    show_fresh();
+    show_captions();
+    show_span();
+    show_readings();
+    refresh_chart();
 }
 
 /* -------------------------------------------------------------------------------------- */
-
-static void show_alarm(const char *title, const char *text, const char *command)
-{
-    lv_label_set_text(alarm_title, title);
-    /* Command on its own line, readable before copying */
-    if (command[0])
-        lv_label_set_text_fmt(alarm_text, "%s\n%s", text, command);
-    else
-        lv_label_set_text(alarm_text, text);
-    snprintf(alarm_command, sizeof alarm_command, "%s", command);
-    kit_show(copy_button, command[0] != '\0');
-    kit_show(alarm_strip, true);
-}
 
 /* Per platform hint to make power readable, and the command for it if there is one */
 #define RAPL_FOLDER "/sys/class/powercap/intel-rapl"
@@ -391,7 +577,7 @@ static void show_alarm(const char *title, const char *text, const char *command)
 /* first, then sudo on this program */
 static const char *again_as_root(const char *first)
 {
-    static char command[sizeof alarm_command];
+    static char command[1024];
     /* Quoted so a path with spaces or shell characters pastes as one */
     snprintf(command, sizeof command, "%ssudo '%s'", first, program_path);
     return command;
@@ -441,205 +627,44 @@ static const char *power_access_command(void)
 #endif
 }
 
-/* GPU row, split and legend key only when there is a GPU */
-static void show_gpu(bool shown)
-{
-    kit_show(rows[ROW_GPU].box, shown);
-    kit_show(split_box, shown);
-    kit_show(gpu_key, shown);
-    /* Without a GPU the CPU line would just cover the total */
-    kit_show(cpu_key, shown);
-    /* CPU row's dot hidden too, the row keeps its place */
-    lv_obj_set_style_bg_opa(lv_obj_get_child(rows[ROW_CPU].box, 0), shown ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-}
-
 /* What the hardware offers, known once opened */
 static void show_hardware(void)
 {
-    show_gpu(has_gpu);
-    /* No power, no session stats or emissions */
-    kit_show(session_panel, has_cpu || has_gpu);
-    kit_show(carbon_panel, has_cpu || has_gpu);
+    bool has_power = has_cpu || has_gpu;
+
+    /* Without a GPU the processor is the whole machine */
+    kit_show(breakdown, has_gpu);
+    kit_show(choices[SERIES_CPU], has_gpu);
+    kit_show(choices[SERIES_GPU], has_gpu);
+    /* No power, no emissions */
+    kit_show(carbon_panel, has_power);
+    kit_show(parts_row, has_power);
 
     if (!load_reads)
-        show_alarm("CPU load cannot be read on this machine.",
-                   "It was built for another operating system: rebuild with"
-                   " alr build -- -XPJ_OS=linux, windows, macos or freebsd.", "");
+        ui_alarm("CPU load cannot be read on this machine.",
+                 "It was built for another operating system: rebuild with"
+                 " alr build -- -XPJ_OS=linux, windows, macos or freebsd.", "");
 #ifdef PJ_MACOS
     /* Already root, so powermetrics was just slow with its first sample */
     else if (!has_cpu && geteuid() == 0)
-        show_alarm("powermetrics gave no CPU power reading in time.",
-                   "Press Stop, then Start, to try again.", "");
+        ui_alarm("powermetrics gave no CPU power reading in time.", "Press Stop, then Start, to try again.", "");
 #endif
-    else if (!has_cpu && !has_gpu)
-        show_alarm("No power source could be read. CPU load is still measured.",
-                   power_access_hint(), power_access_command());
+    else if (!has_power)
+        ui_alarm("No power source could be read. CPU load is still measured.",
+                 power_access_hint(), power_access_command());
     else if (!has_cpu)
-        show_alarm("Only the graphics card's power can be read.",
-                   power_access_hint(), power_access_command());
+        ui_alarm("Only the graphics card's power can be read.", power_access_hint(), power_access_command());
     else
-        kit_show(alarm_strip, false);
+        ui_alarm_clear();
 }
 
 /* -------------------------------------------------------------------------------------- */
-
-/* Each part's share of the bar in 255ths (max flex grow), and in per cent */
-static void show_split(const cycle *data, bool available)
-{
-    double total = data->total_power;
-    double share[SPLIT_COUNT] = { data->cpu_power, data->gpu_power };
-    long cpu = available && total > 0.0 ? lround(100.0 * share[SPLIT_CPU] / total) : 0;
-    /* Shares add up to 100; a part drawing anything never shows 0 */
-    long percent[SPLIT_COUNT] = { cpu, 100 - cpu };
-    char text[16];
-
-    available = available && total > 0.0;
-    for (int i = 0; i < SPLIT_COUNT; i++) {
-        lv_obj_set_flex_grow(split_part[i], available ? (uint8_t)lround(255.0 * share[i] / total) : 0);
-        if (!available)
-            show_figure(split_share[i], NULL, "%");
-        else if (share[i] > 0.0 && percent[i] == 0)
-            show_figure(split_share[i], "<1", "%");
-        else if (share[i] < total && percent[i] == 100)
-            show_figure(split_share[i], ">99", "%");
-        else {
-            snprintf(text, sizeof text, "%ld", percent[i]);
-            show_figure(split_share[i], text, "%");
-        }
-    }
-}
-
-/* Time of day of a measurement (Unix time in the CSV) */
-static char *time_of(char *buf, size_t n, int64_t taken)
-{
-    time_t t = (time_t)taken;
-    const struct tm *local = localtime(&t);
-
-    if (local == NULL || strftime(buf, n, "%H:%M:%S", local) == 0) snprintf(buf, n, "an unknown time");
-    return buf;
-}
-
-/* Session stats after a measurement of watts at taken. Average is energy over time, as on
- * the register; standard deviation is over the measurements. */
-static void show_session(double watts, int64_t taken, const totals *sum)
-{
-    char number[32], text[64];
-    double delta = watts - mean, cycle = sum->elapsed - measured;
-    double average = sum->elapsed > 0.0 ? sum->total_energy / sum->elapsed : watts;
-    /* Hours in a 365.25 day year, in thousands, for kWh */
-    double year = average * 8.766;
-
-    /* Each measurement weighted by the time it covers, so the spread is around the shown
-     * average (energy over time). West's weighted Welford. */
-    measured = sum->elapsed;
-    if (cycle > 0.0) {
-        weight += cycle;
-        mean += delta * cycle / weight;
-        squares += cycle * delta * (watts - mean);
-    }
-    if (samples == 1 || watts > peak) {
-        peak = watts;
-        peak_taken = taken;
-    }
-    if (samples == 1 || watts < low) {
-        low = watts;
-        low_taken = taken;
-    }
-    double spread = weight > 0.0 ? sqrt(squares / weight) : 0.0;
-
-    /* Watts to one decimal like the readings, a spread under 1 W to two */
-    show_figure(stat_value[STAT_AVERAGE], fmt_number(number, sizeof number, average, 1), "W");
-    show_figure(stat_value[STAT_SPREAD],
-                samples > 1 ? fmt_number(number, sizeof number, spread, spread < 0.995 ? 2 : 1) : NULL, "W");
-    show_watts(stat_value[STAT_HIGHEST], peak, true);
-    snprintf(text, sizeof text, "%s, at %s", stat_names[STAT_HIGHEST], time_of(number, sizeof number, peak_taken));
-    kit_set_text(stat_name[STAT_HIGHEST], text);
-    show_watts(stat_value[STAT_LOWEST], low, true);
-    snprintf(text, sizeof text, "%s, at %s", stat_names[STAT_LOWEST], time_of(number, sizeof number, low_taken));
-    kit_set_text(stat_name[STAT_LOWEST], text);
-    if (year >= 9999.5)
-        show_figure(stat_value[STAT_YEAR], fmt_number(number, sizeof number, year / 1000.0, year < 99995.0 ? 2 : 1), "MWh");
-    else
-        show_figure(stat_value[STAT_YEAR], fmt_number(number, sizeof number, year, year < 9.995 ? 2 : year < 99.95 ? 1 : 0),
-                    "kWh");
-}
-
-static void show_cycle(const cycle *data, const totals *sum, int64_t taken)
-{
-    bool has_power = has_cpu || has_gpu;
-    char text[32];
-
-    kit_set_text(reading, has_power ? fmt_number(text, sizeof text, data->total_power, 1) : NOTHING);
-    kit_set_text(second, has_cpu && data->target_power >= 0.0 ? fmt_number(text, sizeof text, data->target_power, 1)
-                                                              : NOTHING);
-    show_watts(rows[ROW_CPU].now, data->cpu_power, has_cpu);
-    show_watts(rows[ROW_GPU].now, data->gpu_power, has_gpu);
-    show_watts(rows[ROW_TARGET].now, data->target_power, has_cpu);
-    show_load(rows[ROW_LOAD].now, data->cpu_usage);
-    show_load(rows[ROW_SHARE].now, data->target_usage);
-
-    show_scaled(rows[ROW_CPU].since, sum->cpu_energy, joule_units, has_cpu);
-    show_scaled(rows[ROW_GPU].since, sum->gpu_energy, joule_units, has_gpu);
-    /* Target never read: no energy rather than zero */
-    show_scaled(rows[ROW_TARGET].since, sum->target_energy, joule_units, has_cpu && sum->target_read);
-    /* Program's share of the machine, power now and energy since start */
-    show_figure(rows[ROW_TOTAL_SHARE].now,
-                has_cpu && data->target_power >= 0.0 && data->total_power > 0.0
-                    ? fmt_number(text, sizeof text, 100.0 * data->target_power / data->total_power, 1) : NULL, "%");
-    show_figure(rows[ROW_TOTAL_SHARE].since,
-                has_cpu && sum->target_read && sum->total_energy > 0.0
-                    ? fmt_number(text, sizeof text, 100.0 * sum->target_energy / sum->total_energy, 1) : NULL, "%");
-
-    last_cycle = *data;
-    last_sum = *sum;
-    show_carbon();
-
-    kit_set_text(clock_label, fmt_clock(text, sizeof text, sum->elapsed));
-    show_split(data, has_power);
-    if (has_power) {
-        show_session(data->total_power, taken, sum);
-        show_register(sum->total_energy, true);
-        turn_disc(sum->total_energy, true);
-    }
-}
-
-/* Placeholders shaped like numbers until the first reading */
-static void clear_readings(void)
-{
-    char text[16];
-
-    kit_set_text(reading, "--.-");
-    kit_set_text(second, "--.-");
-    for (int i = 0; i < ROW_COUNT; i++) {
-        kit_set_text(rows[i].now, NOTHING);
-        kit_set_text(rows[i].since, "");
-    }
-    kit_set_text(rows[ROW_CPU].since, NOTHING);
-    kit_set_text(rows[ROW_GPU].since, NOTHING);
-    kit_set_text(rows[ROW_TARGET].since, NOTHING);
-    kit_set_text(rows[ROW_TOTAL_SHARE].since, NOTHING);
-    kit_set_text(rows[ROW_CARBON].since, NOTHING);
-    kit_set_text(rows[ROW_TARGET_CARBON].since, NOTHING);
-    for (int i = 0; i < STAT_COUNT; i++) {
-        kit_set_text(stat_name[i], stat_names[i]);
-        kit_set_text(stat_value[i], NOTHING);
-    }
-    mean = squares = weight = measured = 0.0;
-    missed = 0;
-    show_samples();
-    show_split(&(cycle){ 0 }, false);
-    show_register(0.0, false);
-    kit_set_text(clock_label, fmt_clock(text, sizeof text, 0.0));
-    joules_per_turn = turns = counted = 0.0;
-    kit_disc_turn(disc, 0.0, false);
-}
-
-/* -------------------------------------------------------------------------------------- */
-/* The trend                                                                              */
+/* The chart                                                                              */
 /* -------------------------------------------------------------------------------------- */
 
-/* Chart unit: hundredths of a watt, or whole watts above 10 kW, LVGL chart points are 32 bit */
-static double per_watt = 100.0;
+/* Chart unit: 10 µW, or whole watts above 10 kW, LVGL chart points are 32 bit */
+static double per_watt = 100000.0;
+static int32_t axis_top;   /* top of the scale, chart units */
 
 /* Appends a measurement, or a gap, to each series. The chart shifts its points along and
  * redraws itself, nothing else is rewritten. */
@@ -659,19 +684,55 @@ static void replot(void)
     for (int i = 1; i <= history_count(); i++) plot(history_get(i));
 }
 
+/* The chosen series has points to draw */
+static bool plotted(void)
+{
+    return history_count() > 0 && counted(shown);
+}
+
+/* History indexes of the highest, lowest and last point of the chosen series, 0 for none */
+static int mark_high, mark_low, mark_last;
+
+/* Gaps and unread points left out. Returns the highest value, 0 for none. */
+static double find_marks(void)
+{
+    double high = 0.0, low = 0.0;
+
+    mark_high = mark_low = mark_last = 0;
+    for (int i = 1; i <= history_count(); i++) {
+        const history_point *p = history_get(i);
+        double v = history_value(p, shown);
+
+        if (p->taken == 0 || v < 0.0) continue;
+        if (mark_last == 0 || v > high) {
+            mark_high = i;
+            high = v;
+        }
+        if (mark_last == 0 || v < low) {
+            mark_low = i;
+            low = v;
+        }
+        mark_last = i;
+    }
+    return high;
+}
+
 static void refresh_chart(void)
 {
-    /* At most four bands up to the peak, 1 W scale when idle or empty */
-    double highest = fmax(1.0, history_peak(SERIES_TOTAL));
+    /* At most four bands up to the highest point or the average, 1 mW at least */
+    double peak = find_marks();
+    double highest = fmax(0.001, fmax(peak, average_of(shown)));
     double step = nice_step(highest / 4.0);
     int bands = (int)ceil(highest / step - 1e-9);
-    int decimals = decimals_of(step);
-    int count = history_count();
-    bool cpu = cpu_expected();
-    double unit = highest > 10000.0 ? 1.0 : 100.0;
-    static double shown_step;
+    /* Labels in mW under 1 W */
+    double factor = step * bands < 1.0 ? 1000.0 : 1.0;
+    int decimals = decimals_of(step * factor);
+    double unit = history_peak(SERIES_TOTAL) > 10000.0 ? 1.0 : 100000.0;
+    static double shown_step, shown_factor;
     static int shown_bands = -1;
-    bool empty = count == 0 || !(cpu || has_gpu);
+    int count = history_count();
+    bool drawn = plotted();
+    char note[200];
 
     if (unit != per_watt) {
         per_watt = unit;
@@ -679,17 +740,20 @@ static void refresh_chart(void)
         shown_bands = -1;   /* the range is in the new unit */
     }
     /* Only reset the scale when it changes, which is rare */
-    if (bands != shown_bands || step != shown_step) {
+    if (bands != shown_bands || step != shown_step || factor != shown_factor) {
         shown_bands = bands;
         shown_step = step;
-        lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, (int32_t)lround(step * bands * per_watt));
+        shown_factor = factor;
+        axis_top = (int32_t)lround(step * bands * per_watt);
+        lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, axis_top);
         lv_chart_set_div_line_count(chart, (uint32_t)bands + 1, 0);
 
         /* Unit on the top label only */
         for (int band = 0; band <= bands; band++) {
             char number[16];
             snprintf(band_text[band], sizeof band_text[band], "%s%s",
-                     fmt_number(number, sizeof number, step * band, decimals), band == bands ? " W" : "");
+                     fmt_number(number, sizeof number, step * band * factor, decimals),
+                     band < bands ? "" : factor > 1.0 ? " mW" : " W");
             band_labels[band] = band_text[band];
         }
         band_labels[bands + 1] = NULL;
@@ -697,249 +761,263 @@ static void refresh_chart(void)
         lv_scale_set_total_tick_count(scale, (uint32_t)bands + 1);
         lv_scale_set_text_src(scale, band_labels);
     }
-    /* No numbers before the first reading */
-    if (lv_scale_get_label_show(scale) == empty) lv_scale_set_label_show(scale, !empty);
+    /* No numbers without a line */
+    if (lv_scale_get_label_show(scale) != drawn) lv_scale_set_label_show(scale, drawn);
 
-    lv_chart_hide_series(chart, lines[SERIES_TOTAL], !(cpu || has_gpu));
-    lv_chart_hide_series(chart, lines[SERIES_CPU], !cpu || !has_gpu);
-    lv_chart_hide_series(chart, lines[SERIES_GPU], !has_gpu);
-    lv_chart_hide_series(chart, lines[SERIES_TARGET], !(cpu && follows()));
+    for (int s = 0; s < 4; s++) lv_chart_hide_series(chart, lines[s], s != (int)shown || !drawn);
 
     if (run == RUN_IDLE && count == 0)
-        kit_set_text(chart_note, "Press Start to measure.");
-    else if (!cpu && !has_gpu)
-        kit_set_text(chart_note, "No power reading on this machine.");
+        snprintf(note, sizeof note, "Press Start to measure.");
+    else if (!cpu_expected() && !has_gpu)
+        snprintf(note, sizeof note, "No power reading on this machine.");
     else if (count == 0)
-        kit_set_text(chart_note, "Waiting for the first measurement…");
-    kit_show(chart_note, empty);
+        snprintf(note, sizeof note, "Waiting for the first measurement…");
+    else if (shown == SERIES_TARGET && has_cpu)
+        snprintf(note, sizeof note, "%s hasn't been read yet.", heading);
+    else
+        snprintf(note, sizeof note, "No %s power reading on this machine.", shown == SERIES_GPU ? "graphics" : "processor");
+    kit_set_text(chart_note, note);
+    kit_show(chart_note, !drawn);
+}
+
+/* The chart and its caption follow the chosen series */
+static void choose(series s)
+{
+    shown = s;
+    for (int i = 0; i < 4; i++) lv_obj_set_state(choices[i], LV_STATE_CHECKED, i == (int)s);
+    refresh_chart();
+    show_items();
+}
+
+static void on_choice(lv_event_t *e)
+{
+    choose((series)(intptr_t)lv_event_get_user_data(e));
+}
+
+/* Where LVGL draws history point i (1 is the oldest) of value v, in chart units: the newest
+ * is at the right edge */
+static lv_point_t point_at(const lv_area_t *area, int i, int32_t v)
+{
+    int32_t w = lv_area_get_width(area), h = lv_area_get_height(area);
+    int32_t position = HISTORY_CAPACITY - history_count() + i - 1;
+
+    return (lv_point_t){ area->x1 + w * position / (HISTORY_CAPACITY - 1),
+                         lv_map(v, 0, axis_top, area->y1 + h, area->y1) };
+}
+
+/* Text on a plate-coloured patch so the line doesn't run through it; before puts it left of x */
+static void draw_tag(lv_layer_t *layer, const char *text, int32_t x, int32_t y, bool before, bool strong)
+{
+    const lv_font_t *font = ui_font(12);
+    lv_draw_rect_dsc_t patch;
+    lv_draw_label_dsc_t words;
+    lv_point_t size;
+    lv_area_t a, back;
+
+    lv_text_get_size(&size, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    a.x1 = before ? x - size.x - ui_px(2) : x;
+    a.x2 = a.x1 + size.x + ui_px(2);
+    a.y1 = y - size.y / 2;
+    a.y2 = a.y1 + size.y;
+    back = a;
+    lv_area_increase(&back, ui_px(3), 0);
+    lv_draw_rect_dsc_init(&patch);
+    patch.bg_color = theme_color(TOKEN_PLATE);
+    patch.radius = ui_px(2);
+    lv_draw_rect(layer, &patch, &back);
+
+    lv_draw_label_dsc_init(&words);
+    words.font = font;
+    words.color = theme_color(strong ? TOKEN_TEXT : TOKEN_MUTED);
+    words.text = text;
+    words.text_local = 1;
+    lv_draw_label(layer, &words, &a);
+}
+
+static void draw_dot(lv_layer_t *layer, lv_point_t at, int32_t radius)
+{
+    lv_draw_rect_dsc_t d;
+    lv_area_t a = { at.x - radius, at.y - radius, at.x + radius, at.y + radius };
+
+    lv_draw_rect_dsc_init(&d);
+    d.radius = LV_RADIUS_CIRCLE;
+    d.bg_color = theme_color(pen[shown]);
+    d.border_color = theme_color(TOKEN_PLATE);
+    d.border_width = ui_px(2);
+    lv_draw_rect(layer, &d, &a);
+}
+
+/* A mark's dot and "highest 1.3 W at 18:18:16"; in the last quarter the text goes left */
+static void draw_mark(lv_layer_t *layer, const lv_area_t *area, int i, const char *word, bool below)
+{
+    const history_point *p = history_get(i);
+    double watts = history_value(p, shown);
+    lv_point_t at = point_at(area, i, (int32_t)lround(watts * per_watt));
+    bool before = at.x > area->x1 + lv_area_get_width(area) * 3 / 4;
+    int32_t y = at.y, step = ui_px(14);
+    char number[32], clock[32], text[96];
+    const char *unit = "";
+
+    if (below) y = at.y + step < area->y2 ? at.y + step : at.y - step;
+    else y = LV_MAX(y, area->y1 + step / 2);
+    snprintf(text, sizeof text, "%s %s %s at %s", word, power_text(number, sizeof number, watts, &unit), unit,
+             time_of(clock, sizeof clock, p->taken));
+    draw_dot(layer, at, ui_px(4));
+    draw_tag(layer, text, before ? at.x - ui_px(10) : at.x + ui_px(10), y, before, true);
+}
+
+/* Average line with its label, highest and lowest of the points shown, and the last point */
+static void draw_marks(lv_event_t *e)
+{
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_draw_line_dsc_t line;
+    lv_area_t area;
+    double average = average_of(shown);
+    char number[32], text[64];
+    const char *unit = "";
+
+    if (!plotted() || mark_last == 0) return;
+    lv_obj_get_content_coords(chart, &area);
+
+    if (average >= 0.0) {
+        int32_t y = point_at(&area, 1, (int32_t)lround(average * per_watt)).y;
+
+        lv_draw_line_dsc_init(&line);
+        line.color = theme_color(TOKEN_FAINT);
+        line.width = ui_px(1);
+        line.dash_width = ui_px(5);
+        line.dash_gap = ui_px(4);
+        line.p1.x = area.x1;
+        line.p2.x = area.x2;
+        line.p1.y = line.p2.y = y;
+        lv_draw_line(layer, &line);
+        snprintf(text, sizeof text, "average since start %s %s", power_text(number, sizeof number, average, &unit), unit);
+        draw_tag(layer, text, area.x1 + ui_px(6), y - ui_px(10) > area.y1 ? y - ui_px(10) : y + ui_px(10), false, false);
+    }
+    /* Different points only when the values differ */
+    if (mark_high != mark_low) {
+        draw_mark(layer, &area, mark_high, "highest", false);
+        draw_mark(layer, &area, mark_low, "lowest", true);
+    }
+    draw_dot(layer, point_at(&area, mark_last, (int32_t)lround(history_value(history_get(mark_last), shown) * per_watt)),
+             ui_px(4));
+}
+
+/* Gap in the trend so the line isn't drawn across unmeasured time */
+static void break_trend(void)
+{
+    static const history_point gap = {
+        .taken = 0,
+        .data = { UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE },
+    };
+
+    if (history_count() > 0 && history_get(history_count())->taken != 0) {
+        history_append(&gap);
+        plot(&gap);
+    }
 }
 
 /* -------------------------------------------------------------------------------------- */
 /* Building it                                                                            */
 /* -------------------------------------------------------------------------------------- */
 
-/* One timer, paused when idle; a second click restarts the two seconds of "Copied" */
-static lv_timer_t *copy_timer;
-
-static void on_copy_aged(lv_timer_t *timer)
+/* Caption over a number and its unit, the unit on the number's baseline */
+static void new_figure(lv_obj_t *row, reading *r, int which, text_role role, text_role unit_role, int32_t width)
 {
-    lv_timer_pause(timer);
-    kit_button_set(copy_button, LV_SYMBOL_COPY, "Copy command", BUTTON_NORMAL);
-}
+    lv_obj_t *box = kit_box(row, true, 0), *line;
+    const lv_font_t *font;
 
-static void on_export(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    display_export();
-}
-
-/* Show "Copied" on the button for a moment */
-static void on_copy(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    platform_set_clipboard(alarm_command);
-    kit_button_set(copy_button, LV_SYMBOL_OK, "Copied", BUTTON_NORMAL);
-    if (copy_timer == NULL) copy_timer = lv_timer_create(on_copy_aged, 2000, NULL);
-    lv_timer_reset(copy_timer);
-    lv_timer_resume(copy_timer);
-    say("Copied to the clipboard: %s", alarm_command);
-}
-
-/* Legend key for a series */
-static lv_obj_t *new_key(lv_obj_t *strip, series s, const char *name)
-{
-    lv_obj_t *key = kit_box(strip, false, 6);
-
-    kit_dot(key, pen[s], true);
-    kit_label(key, name, TEXT_CAPTION);
-    return key;
-}
-
-static void build_alarm(lv_obj_t *column)
-{
-    lv_obj_t *icon, *words;
-
-    alarm_strip = kit_alarm(column);
-    lv_obj_set_flex_align(alarm_strip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    icon = lv_label_create(alarm_strip);
-    lv_label_set_text(icon, LV_SYMBOL_WARNING);
-    lv_obj_set_style_text_font(icon, ui_font(16), 0);
-
-    words = kit_box(alarm_strip, true, 2);
-    kit_let_out(words, 4);
-    lv_obj_set_width(words, 0);
-    lv_obj_set_flex_grow(words, 1);
-    alarm_title = lv_label_create(words);
-    lv_obj_set_style_text_font(alarm_title, ui_font(15), 0);
-    lv_obj_set_width(alarm_title, LV_PCT(100));
-    alarm_text = lv_label_create(words);
-    lv_obj_set_style_text_font(alarm_text, ui_font(13), 0);
-    lv_obj_set_width(alarm_text, LV_PCT(100));
-
-    /* Below the text, the column is narrow */
-    copy_button = kit_button(words, LV_SYMBOL_COPY, "Copy command", BUTTON_NORMAL, on_copy, NULL);
-    lv_obj_set_style_margin_top(copy_button, ui_px(6), 0);
-    kit_show(alarm_strip, false);
-}
-
-/* Meter reading: name above figures and unit */
-static lv_obj_t *new_reading(lv_obj_t *row, const char *name, text_role role, lv_obj_t **value, lv_obj_t **label)
-{
-    lv_obj_t *box = kit_box(row, true, 0), *line, *unit;
-    const lv_font_t *font = ui_figures(role == TEXT_READING ? 64 : 40);
-
-    *label = kit_lines(kit_label(box, name, TEXT_TITLE), 1);
-    lv_obj_set_style_max_width(*label, ui_px(110), 0);
-    line = kit_box(box, false, 6);
+    lv_obj_set_style_min_width(box, ui_px(width), 0);
+    r->caption[which] = kit_label(box, "", TEXT_MUTED);
+    line = kit_box(box, false, 5);
     lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    *value = kit_label(line, "--.-", role);
+    r->number[which] = kit_label(line, NOTHING, role);
+    r->unit[which] = kit_label(line, "", unit_role);
+    font = lv_obj_get_style_text_font(r->number[which], 0);
     /* Line height leaves room for accents, figures don't need it */
-    lv_obj_set_style_margin_top(*value, -font->line_height / 5, 0);
-    unit = kit_label(line, "W", role == TEXT_READING ? TEXT_READING_UNIT : TEXT_WORD);
-    on_baseline(unit, font, lv_obj_get_style_text_font(unit, 0));
-    return box;
+    lv_obj_set_style_margin_top(r->number[which], -font->line_height / 5, 0);
+    on_baseline(r->unit[which], font, lv_obj_get_style_text_font(r->unit[which], 0));
 }
 
-/* Register with its unit, elapsed time above it and the energy in Wh below */
-static void build_register(lv_obj_t *row)
+/* Name and note over power, energy and carbon */
+static void new_reading(lv_obj_t *row, reading *r, bool large)
 {
-    lv_obj_t *box = kit_box(row, true, 6), *line;
+    lv_obj_t *head, *figures;
 
-    line = kit_box(box, false, 0);
-    lv_obj_set_width(line, LV_PCT(100));
-    lv_obj_set_flex_align(line, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    kit_label(line, "Energy since start", TEXT_TITLE);
-    clock_label = kit_label(line, "", TEXT_FIGURES);
-
-    line = kit_box(box, false, 10);
-    lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    wheels = kit_register(line, WHEELS);
-    wheels_unit = kit_label(line, "J", TEXT_READING_UNIT);
-    lv_obj_set_style_min_width(wheels_unit, ui_px(26), 0);
-
-    watt_hours = kit_label(box, "", TEXT_FIGURES);
-    lv_label_set_recolor(watt_hours, true);
+    r->box = kit_box(row, true, 8);
+    head = kit_box(r->box, false, 8);
+    r->dot = kit_dot(head, TOKEN_TOTAL);
+    r->name = kit_lines(kit_label(head, "Whole machine", TEXT_TITLE), 1);
+    lv_obj_set_style_max_width(r->name, ui_px(220), 0);
+    r->note = kit_lines(kit_label(head, "", TEXT_MUTED), 1);
+    lv_obj_set_style_max_width(r->note, ui_px(260), 0);
+    figures = kit_box(r->box, false, 28);
+    lv_obj_set_flex_align(figures, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    new_figure(figures, r, FIG_POWER, large ? TEXT_READING : TEXT_READING_SECOND,
+               large ? TEXT_READING_UNIT : TEXT_SECOND_UNIT, large ? 150 : 110);
+    new_figure(figures, r, FIG_ENERGY, TEXT_GROUP_FIGURE, TEXT_GROUP_UNIT, 110);
+    new_figure(figures, r, FIG_CARBON, TEXT_GROUP_FIGURE, TEXT_GROUP_UNIT, 120);
 }
 
-/* Machine power, followed program's power beside it, register on the right, disc below */
-static void build_meter(lv_obj_t *column)
+static void build_readings(lv_obj_t *column)
 {
-    lv_obj_t *panel = kit_panel(column, NULL, 14);
-    lv_obj_t *body = kit_panel_body(panel), *line, *spacer, *name;
+    lv_obj_t *panel = kit_panel(column, NULL, 0), *row;
 
     lv_obj_set_width(panel, LV_PCT(100));
-    /* Titles aligned at the top, both readings' figures on the same baseline */
-    line = kit_box(body, false, 24);
-    lv_obj_set_width(line, LV_PCT(100));
-    lv_obj_set_flex_align(line, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    new_reading(line, "Whole machine", TEXT_READING, &reading, &name);
-    lv_obj_update_layout(line);
-    /* Followed program's power, separated by a rule, in its series colour */
-    second_box = new_reading(line, "", TEXT_READING_SECOND, &second, &second_name);
-    lv_obj_set_style_pad_left(second_box, ui_px(20), 0);
-    lv_obj_set_style_border_side(second_box, LV_BORDER_SIDE_LEFT, 0);
-    lv_obj_set_style_border_width(second_box, ui_px(1), 0);
-    lv_obj_set_style_border_color(second_box, theme_color(TOKEN_ENAMEL_DEEP), 0);
-    /* Same height as the machine's box, so names align at the top and figures at the bottom */
-    lv_obj_set_height(second_box, lv_obj_get_height(lv_obj_get_child(line, 0)));
-    lv_obj_set_flex_align(second_box, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    on_baseline(lv_obj_get_child(second_box, 1), ui_figures(64), ui_figures(40));
-    spacer = kit_box(line, false, 0);
-    lv_obj_set_flex_grow(spacer, 1);
-    build_register(line);
-
-    disc = kit_disc(body);
-    lv_obj_set_width(disc, LV_PCT(100));
+    row = kit_box(kit_panel_body(panel), false, 28);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    new_reading(row, &first, true);
+    new_reading(row, &second, false);
+    /* Rule between the two; names at the top, figures on the same bottom line */
+    lv_obj_set_style_pad_left(second.box, ui_px(28), 0);
+    lv_obj_set_style_border_side(second.box, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_border_width(second.box, ui_px(1), 0);
+    lv_obj_set_style_border_color(second.box, theme_color(TOKEN_ENAMEL_DEEP), 0);
+    lv_obj_update_layout(row);
+    lv_obj_set_height(second.box, lv_obj_get_height(first.box));
+    lv_obj_set_flex_align(second.box, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 }
 
-/* Row: series dot (-1 for none), name, leader, value now, energy since start */
-static void new_row(lv_obj_t *body, int which, int series, const char *name)
+/* Right-aligned column heading or cell */
+static lv_obj_t *cell(lv_obj_t *row, const char *text, text_role role, int32_t width)
 {
-    row *r = &rows[which];
-    lv_obj_t *dot;
+    lv_obj_t *label = kit_label(row, text, role);
 
-    r->box = kit_box(body, false, 8);
-    lv_obj_set_size(r->box, LV_PCT(100), ui_px(28));
-    dot = kit_dot(r->box, series >= 0 ? pen[series] : TOKEN_PLATE, false);
-    if (series < 0) lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
-    r->name = kit_lines(kit_label(r->box, name, TEXT_TITLE), 1);
-    lv_obj_set_style_max_width(r->name, ui_px(110), 0);
-    kit_leader(r->box);
-    r->now = kit_label(r->box, NOTHING, TEXT_ROW_FIGURE);
-    r->since = kit_label(r->box, "", TEXT_ROW_FIGURE);
-    lv_obj_set_style_text_color(r->since, theme_color(TOKEN_MUTED), 0);
-    for (lv_obj_t *figure = r->now; figure; figure = figure == r->now ? r->since : NULL) {
-        lv_label_set_recolor(figure, true);
-        lv_obj_set_style_text_align(figure, LV_TEXT_ALIGN_RIGHT, 0);
-    }
-    lv_obj_set_width(r->now, ui_px(NOW_WIDTH));
-    lv_obj_set_width(r->since, ui_px(SINCE_WIDTH));
+    lv_obj_set_width(label, ui_px(width));
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_recolor(label, true);
+    return label;
 }
 
-/* Panel of rows, column headings in its title strip */
-static lv_obj_t *rows_panel(lv_obj_t *column, const char *title, const char *now, const char *since)
+/* Processor and graphics card, column headings in the title strip */
+static void build_breakdown(lv_obj_t *row)
 {
-    lv_obj_t *panel = kit_panel(column, title, 0), *strip = kit_panel_strip(panel), *head;
+    static const char *const names[PART_COUNT] = { "Processor", "Graphics" };
+    lv_obj_t *strip, *body, *line, *name;
 
-    lv_obj_set_width(panel, LV_PCT(100));
+    breakdown = kit_panel(row, "Machine breakdown", 0);
+    lv_obj_set_width(breakdown, 0);
+    lv_obj_set_flex_grow(breakdown, 3);
+    strip = kit_panel_strip(breakdown);
     lv_obj_set_style_pad_column(strip, ui_px(8), 0);
-    head = kit_label(strip, now, TEXT_CAPTION);
-    lv_obj_set_width(head, ui_px(NOW_WIDTH));
-    lv_obj_set_style_text_align(head, LV_TEXT_ALIGN_RIGHT, 0);
-    head = kit_label(strip, since, TEXT_CAPTION);
-    lv_obj_set_width(head, ui_px(SINCE_WIDTH));
-    lv_obj_set_style_text_align(head, LV_TEXT_ALIGN_RIGHT, 0);
-    return kit_panel_body(panel);
-}
+    head_now = cell(strip, "", TEXT_CAPTION, NOW_WIDTH);
+    head_energy = cell(strip, "", TEXT_CAPTION, ENERGY_WIDTH);
+    cell(strip, "Share of machine", TEXT_CAPTION, SHARE_WIDTH);
 
-/* Split bar on an enamel groove, and its key */
-static void build_split(lv_obj_t *body)
-{
-    static const series pens[SPLIT_COUNT] = { SERIES_CPU, SERIES_GPU };
-    static const char *const names[SPLIT_COUNT] = { "Processor", "Graphics" };
-    lv_obj_t *bar, *keys;
-
-    split_box = kit_box(body, true, 8);
-    lv_obj_set_width(split_box, LV_PCT(100));
-    lv_obj_set_style_pad_top(split_box, ui_px(10), 0);
-
-    bar = kit_box(split_box, false, 0);
-    lv_obj_set_size(bar, LV_PCT(100), ui_px(10));
-    lv_obj_set_style_bg_color(bar, theme_color(TOKEN_ENAMEL), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bar, ui_px(2), 0);
-    lv_obj_set_style_clip_corner(bar, true, 0);
-
-    keys = kit_box(split_box, false, 18);
-    for (int i = 0; i < SPLIT_COUNT; i++) {
-        split_part[i] = kit_box(bar, false, 0);
-        lv_obj_set_size(split_part[i], 0, LV_PCT(100));
-        lv_obj_set_style_bg_color(split_part[i], theme_color(pen[pens[i]]), 0);
-        lv_obj_set_style_bg_opa(split_part[i], LV_OPA_COVER, 0);
-
-        split_key[i] = kit_box(keys, false, 6);
-        kit_dot(split_key[i], pen[pens[i]], false);
-        kit_label(split_key[i], names[i], TEXT_CAPTION);
-        split_share[i] = kit_label(split_key[i], NOTHING, TEXT_FIGURES);
-        lv_label_set_recolor(split_share[i], true);
+    body = kit_panel_body(breakdown);
+    for (int i = 0; i < PART_COUNT; i++) {
+        line = kit_box(body, false, 8);
+        lv_obj_set_size(line, LV_PCT(100), ui_px(32));
+        lv_obj_set_style_border_side(line, LV_BORDER_SIDE_TOP, 0);
+        lv_obj_set_style_border_width(line, ui_px(1), 0);
+        lv_obj_set_style_border_color(line, theme_color(TOKEN_GRID), 0);
+        kit_dot(line, pen[part_series[i]]);
+        name = kit_label(line, names[i], TEXT_TITLE);
+        lv_obj_set_flex_grow(name, 1);
+        part_now[i] = cell(line, NOTHING, TEXT_ROW_FIGURE, NOW_WIDTH);
+        part_energy[i] = cell(line, NOTHING, TEXT_ROW_FIGURE, ENERGY_WIDTH);
+        part_share[i] = cell(line, NOTHING, TEXT_ROW_FIGURE, SHARE_WIDTH);
     }
-}
-
-/* Machine rows with the power split, and a separate panel for the followed program */
-static void build_rows(lv_obj_t *column)
-{
-    lv_obj_t *body = rows_panel(column, "Whole machine", "Now", "Since start");
-
-    new_row(body, ROW_CPU, SERIES_CPU, "Processor");
-    new_row(body, ROW_GPU, SERIES_GPU, "Graphics");
-    new_row(body, ROW_LOAD, -1, "CPU load");
-    build_split(body);
-
-    body = rows_panel(column, "", "Now", "Since start");
-    target_panel = lv_obj_get_parent(body);
-    new_row(body, ROW_TARGET, SERIES_TARGET, "Power");
-    new_row(body, ROW_SHARE, -1, "Share of CPU");
-    new_row(body, ROW_TOTAL_SHARE, -1, "Share of total");
 }
 
 static int32_t width_of(const char *text, const lv_font_t *font)
@@ -1017,7 +1095,7 @@ static void on_mix_changed(lv_event_t *e)
         lv_textarea_set_text(mix_own, fmt_number(number, sizeof number, grams_per_kwh, 0));
     }
     show_mix();
-    if (samples > 0) show_carbon();
+    show_readings();
 }
 
 /* Names, one per line */
@@ -1031,20 +1109,20 @@ static const char *names_of(const electricity *(*get)(int), int count, char *buf
     return buf;
 }
 
-/* Emissions of the machine and of the followed program, and the electricity they run on */
-static void build_carbon(lv_obj_t *column)
+/* The electricity the emissions are counted for */
+static void build_carbon(lv_obj_t *row)
 {
     /* Up to 300 names of 47 bytes */
     static char names[16 * 1024];
-    lv_obj_t *body = rows_panel(column, "Carbon emissions", "Now", "Since start"), *line;
+    lv_obj_t *body, *line;
 
-    carbon_panel = lv_obj_get_parent(body);
-    new_row(body, ROW_CARBON, SERIES_TOTAL, "Whole machine");
-    new_row(body, ROW_TARGET_CARBON, SERIES_TARGET, "");
+    carbon_panel = kit_panel(row, "Carbon intensity", 8);
+    lv_obj_set_width(carbon_panel, 0);
+    lv_obj_set_flex_grow(carbon_panel, 2);
+    body = kit_panel_body(carbon_panel);
 
     line = kit_box(body, false, 8);
     lv_obj_set_width(line, LV_PCT(100));
-    lv_obj_set_style_pad_top(line, ui_px(10), 0);
     kit_let_out(line, 4);
     mix_kind = kit_picker(line, "Country\nEnergy source\nOwn value", MIX_COUNTRY, on_mix_changed, NULL);
     mix_country = kit_picker(line, names_of(carbon_country, carbon_country_count(), names, sizeof names),
@@ -1062,33 +1140,24 @@ static void build_carbon(lv_obj_t *column)
     lv_obj_add_event_cb(mix_own, on_mix_changed, LV_EVENT_VALUE_CHANGED, NULL);
     mix_own_unit = kit_label(line, "g/kWh", TEXT_WORD);
 
-    mix_note = kit_lines(kit_label(body, "", TEXT_CAPTION), 2);
+    mix_note = kit_lines(kit_label(body, "", TEXT_CAPTION), 1);
     lv_obj_set_width(mix_note, LV_PCT(100));
-    lv_obj_set_style_pad_top(mix_note, ui_px(6), 0);
     show_mix();
 }
 
-/* Session stats in two columns, each under its name */
-static void build_session(lv_obj_t *column)
+/* Breakdown and carbon intensity side by side, the same height */
+static void build_parts(lv_obj_t *column)
 {
-    lv_obj_t *body;
-
-    /* Title says whose stats these are, it sits under the followed program's panel */
-    session_panel = kit_panel(column, "Session, whole machine", 0);
-    body = kit_panel_body(session_panel);
-    lv_obj_set_width(session_panel, LV_PCT(100));
-    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(body, 0, 0);
-    lv_obj_set_style_pad_row(body, ui_px(10), 0);
-    for (int i = 0; i < STAT_COUNT; i++) {
-        lv_obj_t *cell = kit_box(body, true, 0);
-
-        lv_obj_set_width(cell, LV_PCT(50));
-        stat_name[i] = kit_lines(kit_label(cell, stat_names[i], TEXT_CAPTION), 1);
-        lv_obj_set_width(stat_name[i], LV_PCT(100));
-        stat_value[i] = kit_label(cell, NOTHING, TEXT_ROW_FIGURE);
-        lv_label_set_recolor(stat_value[i], true);
-    }
+    parts_row = kit_box(column, false, 10);
+    lv_obj_set_width(parts_row, LV_PCT(100));
+    lv_obj_set_flex_align(parts_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    kit_let_out(parts_row, 4);
+    build_breakdown(parts_row);
+    build_carbon(parts_row);
+    lv_obj_update_layout(parts_row);
+    int32_t height = LV_MAX(lv_obj_get_height(breakdown), lv_obj_get_height(carbon_panel));
+    lv_obj_set_height(breakdown, height);
+    lv_obj_set_height(carbon_panel, height);
 }
 
 /* Three vertical lines at the quarters, inside the outer horizontal lines. LVGL's own would
@@ -1110,13 +1179,13 @@ static void draw_time_lines(lv_event_t *e)
     }
 }
 
-static void build_trend(lv_obj_t *column)
+static void build_chart(lv_obj_t *column)
 {
-    /* Drawn in this order, followed program on top */
-    static const series order[] = { SERIES_TOTAL, SERIES_GPU, SERIES_CPU, SERIES_TARGET };
-    lv_obj_t *panel = kit_panel(column, "", 6);
-    lv_obj_t *strip = kit_panel_strip(panel), *body = kit_panel_body(panel);
-    lv_obj_t *plot, *times, *spacer;
+    static const char *const names[4] = { "Whole machine", "Processor", "Graphics", "" };
+    /* Choices in this order, the followed program first */
+    static const series order[] = { SERIES_TARGET, SERIES_TOTAL, SERIES_CPU, SERIES_GPU };
+    lv_obj_t *panel = kit_panel(column, NULL, 6);
+    lv_obj_t *body = kit_panel_body(panel), *top, *spacer, *plot, *times, *caption;
     const lv_font_t *small = ui_font(12);
     /* Pad half a label above and below, as the top and bottom band labels are centred on the
      * outer grid lines. Same padding on scale and chart */
@@ -1126,27 +1195,23 @@ static void build_trend(lv_obj_t *column)
     lv_obj_set_flex_grow(panel, 1);
     lv_obj_set_flex_grow(body, 1);
 
-    /* Title and legend keys, Export at the end */
-    span_label = lv_obj_get_child(strip, 0);
-    lv_obj_set_flex_grow(span_label, 0);
-    lv_obj_set_style_margin_right(span_label, ui_px(8), 0);
-    new_key(strip, SERIES_TOTAL, "Total");
-    cpu_key = new_key(strip, SERIES_CPU, "Processor");
-    gpu_key = new_key(strip, SERIES_GPU, "Graphics");
-    target_key = new_key(strip, SERIES_TARGET, "");
-    target_key_name = kit_lines(lv_obj_get_child(target_key, 1), 1);
-    lv_obj_set_style_max_width(target_key_name, ui_px(120), 0);
-    spacer = kit_box(strip, false, 0);
+    /* Choices, span at the end */
+    top = kit_box(body, false, 6);
+    lv_obj_set_width(top, LV_PCT(100));
+    kit_let_out(top, 4);
+    for (size_t i = 0; i < 4; i++) {
+        series s = order[i];
+        choices[s] = kit_choice(top, pen[s], names[s], on_choice, (void *)(intptr_t)s);
+    }
+    spacer = kit_box(top, false, 0);
     lv_obj_set_flex_grow(spacer, 1);
-    export_key = kit_button(strip, LV_SYMBOL_DOWNLOAD, "Export", BUTTON_NORMAL, on_export, NULL);
-    lv_obj_set_style_pad_hor(export_key, ui_px(10), 0);
-    lv_obj_set_style_text_font(export_key, ui_font(13), 0);
-    kit_let_out(strip, 4);
+    range_label = kit_label(top, "", TEXT_CAPTION);
 
     plot = kit_box(body, false, 8);
     lv_obj_set_width(plot, LV_PCT(100));
     lv_obj_set_flex_grow(plot, 1);
-    lv_obj_set_style_min_height(plot, ui_px(130), 0);
+    lv_obj_set_style_min_height(plot, ui_px(PLOT_MIN), 0);
+    kit_let_out(plot, 8);
 
     /* Labels only, no axis line or ticks */
     scale = lv_scale_create(plot);
@@ -1166,7 +1231,7 @@ static void build_trend(lv_obj_t *column)
     lv_obj_set_style_line_width(scale, 0, LV_PART_ITEMS);
     lv_obj_set_style_length(scale, 0, LV_PART_ITEMS);
 
-    /* Thin grid, series lines 3 px wide on Retina */
+    /* Thin grid, the line 3 px wide on Retina */
     chart = lv_chart_create(plot);
     lv_obj_set_height(chart, LV_PCT(100));
     lv_obj_set_flex_grow(chart, 1);
@@ -1185,11 +1250,12 @@ static void build_trend(lv_obj_t *column)
     lv_obj_set_style_line_width(chart, ui_px(1), LV_PART_MAIN);
     lv_obj_set_style_line_width(chart, (ui_px(3) + 1) / 2, LV_PART_ITEMS);
     lv_obj_set_style_size(chart, 0, 0, LV_PART_INDICATOR);
+    /* Marks reach past the plot by a dot and its ring */
+    lv_obj_set_ext_draw_size(chart, ui_px(8));
+    lv_obj_refresh_ext_draw_size(chart);
     lv_obj_add_event_cb(chart, draw_time_lines, LV_EVENT_DRAW_MAIN_BEGIN, NULL);
-    for (size_t i = 0; i < 4; i++) {
-        series s = order[i];
-        lines[s] = lv_chart_add_series(chart, theme_color(pen[s]), LV_CHART_AXIS_PRIMARY_Y);
-    }
+    lv_obj_add_event_cb(chart, draw_marks, LV_EVENT_DRAW_MAIN_END, NULL);
+    for (int s = 0; s < 4; s++) lines[s] = lv_chart_add_series(chart, theme_color(pen[s]), LV_CHART_AXIS_PRIMARY_Y);
     /* On a plate-coloured patch hiding the grid */
     chart_note = kit_label(chart, "", TEXT_MUTED);
     lv_obj_set_style_bg_color(chart_note, theme_color(TOKEN_PLATE), 0);
@@ -1205,35 +1271,45 @@ static void build_trend(lv_obj_t *column)
     lv_obj_set_flex_align(times, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     ago_far = kit_label(times, "", TEXT_CAPTION);
     ago_mid = kit_label(times, "", TEXT_CAPTION);
-    kit_label(times, "now", TEXT_CAPTION);
+    ago_end = kit_label(times, "", TEXT_CAPTION);
     /* Centred under the middle line whatever the widths of the side labels */
     lv_obj_set_ignore_layout(ago_mid, true);
     lv_obj_align(ago_mid, LV_ALIGN_CENTER, 0, 0);
+
+    caption = kit_box(body, false, 28);
+    lv_obj_set_style_pad_top(caption, ui_px(4), 0);
+    for (int i = 0; i < 3; i++) {
+        items[i] = kit_label(caption, "", TEXT_CAPTION);
+        lv_label_set_recolor(items[i], true);
+    }
 }
 
-void display_create(lv_obj_t *left, lv_obj_t *right)
+void display_create(lv_obj_t *column)
 {
-    build_meter(left);
-    build_trend(left);
-    build_alarm(right);
-    build_rows(right);
-    build_carbon(right);
-    build_session(right);
+    build_readings(column);
+    build_parts(column);
+    build_chart(column);
 
-    kit_show(target_panel, false);
-    kit_show(rows[ROW_TARGET_CARBON].box, false);
-    kit_show(second_box, false);
-    kit_show(target_key, false);
-    show_gpu(false);
-    clear_readings();
-    show_span();
+    kit_show(second.box, false);
+    kit_show(choices[SERIES_TARGET], false);
+    choose(SERIES_TOTAL);
     set_run(RUN_IDLE);
-    refresh_chart();
 }
 
 /* -------------------------------------------------------------------------------------- */
 /* Sessions                                                                               */
 /* -------------------------------------------------------------------------------------- */
+
+/* Placeholders until the first reading */
+static void clear_readings(void)
+{
+    memset(spread, 0, sizeof spread);
+    missed = 0;
+    last_cycle = (cycle){ 0 };
+    last_sum = (totals){ 0 };
+    target_trouble[0] = '\0';
+    controls_show_progress(0.0, 0, 0);
+}
 
 void display_start(const target *t)
 {
@@ -1255,27 +1331,21 @@ void display_start(const target *t)
     else
         snprintf(heading, sizeof heading, "Whole machine");
 
-    /* Followed program's panel, reading and legend key get its name */
-    lv_label_set_text(lv_obj_get_child(kit_panel_strip(target_panel), 0), name);
-    lv_label_set_text(second_name, name);
-    lv_label_set_text(target_key_name, name);
-    lv_label_set_text(rows[ROW_TARGET_CARBON].name, name);
-    kit_show(target_panel, follows());
-    kit_show(rows[ROW_TARGET_CARBON].box, follows());
-    kit_show(session_panel, true);
-    kit_show(carbon_panel, true);
-    kit_show(second_box, follows());
-    kit_show(target_key, follows());
-
+    /* The followed program comes first, the machine beside it */
+    kit_set_text(first.name, follows() ? name : "Whole machine");
+    lv_obj_set_style_bg_color(first.dot, theme_color(follows() ? TOKEN_TARGET : TOKEN_TOTAL), 0);
+    kit_show(second.box, follows());
+    kit_choice_set(choices[SERIES_TARGET], name);
+    kit_show(choices[SERIES_TARGET], follows());
     /* Unknown until the hardware is opened */
-    show_gpu(false);
-    kit_show(alarm_strip, false);
+    kit_show(carbon_panel, true);
+    kit_show(parts_row, true);
+    ui_alarm_clear();
     clear_readings();
-    show_span();
 
+    choose(follows() ? SERIES_TARGET : SERIES_TOTAL);
     sampler_start(t, interval_seconds(chosen_interval()));
     set_run(RUN_STARTING);
-    refresh_chart();
     say("Started: %s, every %s.", heading, interval_label(chosen_interval()));
 }
 
@@ -1284,22 +1354,7 @@ void display_stop(void)
     sampler_stop();
     csv_stop_recording();
     set_run(RUN_IDLE);
-    refresh_chart();
     say("Stopped after %d %s.", samples, samples == 1 ? "measurement" : "measurements");
-}
-
-/* Gap in the trend so the line isn't drawn across unmeasured time */
-static void break_trend(void)
-{
-    static const history_point gap = {
-        .taken = 0,
-        .data = { UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE, UNREADABLE },
-    };
-
-    if (history_count() > 0 && history_get(history_count())->taken != 0) {
-        history_append(&gap);
-        plot(&gap);
-    }
 }
 
 void display_pause(bool paused)
@@ -1309,35 +1364,6 @@ void display_pause(bool paused)
     if (!paused) break_trend();
     set_run(paused ? RUN_PAUSED : RUN_LIVE);
     ui_message(paused ? "Paused: the time and the energy stop counting." : "Resumed.");
-}
-
-/* Last export, the next one proposes it again */
-static char export_path[4096] = CSV_EXPORT_FILE;
-
-static void exported(const char *path, void *user_data)
-{
-    char second[4200], folder[4096] = "", in[4200] = "";
-    int saved = csv_save_history(path, &session_target);
-    const char *word = saved == 1 ? "measurement" : "measurements";
-
-    LV_UNUSED(user_data);
-    if (saved < 0) {
-        warn("%s.", csv_trouble());
-        return;
-    }
-    snprintf(export_path, sizeof export_path, "%s", path);
-    if (csv_folder_of(path, folder, sizeof folder))
-        snprintf(in, sizeof in, " in %s", folder);
-    if (follows())
-        say("Saved %d %s to %s and %s%s.", saved, word, csv_file_name(path),
-            csv_file_name(csv_target_file(path, &session_target, second, sizeof second)), in);
-    else
-        say("Saved %d %s to %s%s.", saved, word, csv_file_name(path), in);
-}
-
-void display_export(void)
-{
-    kit_save_csv("Export the trend to", export_path, csv_file_name(export_path), false, exported);
 }
 
 /* Trend points are one interval apart, as the time labels assume. A running session's trend
@@ -1374,7 +1400,9 @@ void display_report(const report *r)
         load_reads = r->load_readable;
         show_hardware();
         set_run(RUN_LIVE);
-        refresh_chart();
+        /* The chosen series may have gone with the GPU, or never be read without the CPU */
+        if (lv_obj_is_hidden(choices[shown]) || !readable(shown))
+            choose(readable(SERIES_TARGET) ? SERIES_TARGET : SERIES_TOTAL);
         break;
     case REPORT_MEASURED: {
         history_point point = { .taken = r->taken, .data = r->data };
@@ -1384,13 +1412,10 @@ void display_report(const report *r)
         history_append(&point);
         plot(&point);
         written = csv_record_point(&point);
-        show_cycle(&r->data, &r->sum, r->taken);
-        refresh_chart();
-        show_samples();
-        /* Export enabled from the first point */
-        kit_enable(export_key, true);
 
         /* Warn once when the followed program becomes unreadable */
+        if (follows() && r->data.target_usage < 0.0)
+            snprintf(target_trouble, sizeof target_trouble, "%s", r->trouble);
         if (follows() && (r->data.target_usage < 0.0) != target_lost) {
             char name[160];
 
@@ -1399,6 +1424,14 @@ void display_report(const report *r)
                 warn("%s could not be read: %s.", target_name(&session_target, name, sizeof name),
                      r->trouble[0] ? r->trouble : "it is not running");
         }
+
+        add_to_spread(&r->data, &r->sum);
+        last_cycle = r->data;
+        last_sum = r->sum;
+        show_readings();
+        refresh_chart();
+        controls_show_progress(r->sum.elapsed, samples, missed);
+
         /* Once per failure, again only after a row was written */
         if (!written && !csv_failed) warn("%s. Measuring goes on.", csv_trouble());
         csv_failed = !written;
@@ -1406,13 +1439,13 @@ void display_report(const report *r)
     }
     case REPORT_SKIPPED:
         missed++;
-        show_samples();
+        controls_show_progress(last_sum.elapsed, samples, missed);
         break_trend();
         ui_message("The machine was asleep: that measurement was dropped.");
         break;
     case REPORT_FAILED:
         missed++;
-        show_samples();
+        controls_show_progress(last_sum.elapsed, samples, missed);
         break_trend();
         warn("A measurement failed (%s). Measuring goes on.", r->trouble);
         break;

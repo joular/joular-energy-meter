@@ -9,7 +9,7 @@
  * Author : Adel Noureddine
  */
 
-/* Main screen layout and status bar */
+/* Main screen layout, warning banner and status bar */
 
 #include <stdio.h>
 #include <time.h>
@@ -17,14 +17,16 @@
 #include "app.h"
 #include "theme_private.h"
 
-/* Readings column width, logical px */
-#define RIGHT_WIDTH 344
-
 /* Highlight time of a new message, ms */
 #define NEW_MESSAGE_MS 5000
 
 static lv_obj_t *message, *link;
 static lv_timer_t *message_timer;
+
+static lv_obj_t *alarm_strip, *alarm_title, *alarm_text, *copy_button;
+static char alarm_command[1024];
+/* One timer, paused when idle; a second click restarts the two seconds of "Copied" */
+static lv_timer_t *copy_timer;
 
 /* -------------------------------------------------------------------------------------- */
 /* The status bar                                                                         */
@@ -113,13 +115,81 @@ void ui_trouble(const char *text)
 }
 
 /* -------------------------------------------------------------------------------------- */
+/* The warning banner                                                                     */
+/* -------------------------------------------------------------------------------------- */
+
+static void on_copy_aged(lv_timer_t *timer)
+{
+    lv_timer_pause(timer);
+    kit_button_set(copy_button, LV_SYMBOL_COPY, "Copy command", BUTTON_NORMAL);
+}
+
+/* Show "Copied" on the button for a moment */
+static void on_copy(lv_event_t *e)
+{
+    char text[sizeof alarm_command + 32];
+
+    LV_UNUSED(e);
+    platform_set_clipboard(alarm_command);
+    kit_button_set(copy_button, LV_SYMBOL_OK, "Copied", BUTTON_NORMAL);
+    if (copy_timer == NULL) copy_timer = lv_timer_create(on_copy_aged, 2000, NULL);
+    lv_timer_reset(copy_timer);
+    lv_timer_resume(copy_timer);
+    snprintf(text, sizeof text, "Copied to the clipboard: %s", alarm_command);
+    ui_message(text);
+}
+
+static void build_alarm(lv_obj_t *column)
+{
+    lv_obj_t *icon, *words;
+
+    alarm_strip = kit_alarm(column);
+    lv_obj_set_flex_align(alarm_strip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    icon = lv_label_create(alarm_strip);
+    lv_label_set_text(icon, LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_font(icon, ui_font(16), 0);
+
+    words = kit_box(alarm_strip, true, 2);
+    lv_obj_set_width(words, 0);
+    lv_obj_set_flex_grow(words, 1);
+    alarm_title = lv_label_create(words);
+    lv_obj_set_style_text_font(alarm_title, ui_font(16), 0);
+    lv_obj_set_width(alarm_title, LV_PCT(100));
+    alarm_text = lv_label_create(words);
+    lv_obj_set_style_text_font(alarm_text, ui_font(13), 0);
+    lv_obj_set_width(alarm_text, LV_PCT(100));
+
+    copy_button = kit_button(alarm_strip, LV_SYMBOL_COPY, "Copy command", BUTTON_NORMAL, on_copy, NULL);
+    kit_show(alarm_strip, false);
+}
+
+void ui_alarm(const char *title, const char *text, const char *command)
+{
+    lv_label_set_text(alarm_title, title);
+    /* Command on its own line, readable before copying */
+    if (command[0])
+        lv_label_set_text_fmt(alarm_text, "%s\n%s", text, command);
+    else
+        lv_label_set_text(alarm_text, text);
+    kit_show(alarm_text, text[0] != '\0' || command[0] != '\0');
+    snprintf(alarm_command, sizeof alarm_command, "%s", command);
+    kit_show(copy_button, command[0] != '\0');
+    kit_show(alarm_strip, true);
+}
+
+void ui_alarm_clear(void)
+{
+    kit_show(alarm_strip, false);
+}
+
+/* -------------------------------------------------------------------------------------- */
 /* The window                                                                             */
 /* -------------------------------------------------------------------------------------- */
 
 void ui_build(void)
 {
     lv_obj_t *screen = lv_screen_active();
-    lv_obj_t *body, *left, *right;
+    lv_obj_t *body;
 
     lv_obj_add_style(screen, &styles.window, 0);
     lv_obj_set_scrollable(screen, false);
@@ -127,29 +197,19 @@ void ui_build(void)
 
     /* Status bar must exist before display_create, which writes to it */
     controls_create(screen);
-    body = kit_box(screen, false, UI_GUTTER);
+    body = kit_box(screen, true, 10);
     build_status_bar(screen);
 
-    /* Left column takes what the readings column leaves */
+    /* Scrolls only when a banner leaves the chart too little room, scrollbar in the gutter */
     lv_obj_set_width(body, LV_PCT(100));
     lv_obj_set_flex_grow(body, 1);
-    lv_obj_set_style_pad_all(body, ui_px(UI_GUTTER), 0);
-    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    kit_let_out(body, 4);
-
-    left = kit_box(body, true, UI_GUTTER);
-    lv_obj_set_size(left, 0, LV_PCT(100));
-    lv_obj_set_flex_grow(left, 1);
-    kit_let_out(left, 4);
-    /* Readings scroll in a short window, scrollbar in the gutter */
-    lv_obj_set_style_pad_right(body, ui_px(UI_GUTTER - 8), 0);
-    right = kit_box(body, true, UI_GUTTER);
-    lv_obj_set_size(right, ui_px(RIGHT_WIDTH + 8), LV_PCT(100));
-    lv_obj_set_style_pad_right(right, ui_px(8), 0);
-    lv_obj_set_scrollable(right, true);
-    lv_obj_set_scroll_dir(right, LV_DIR_VER);
-    lv_obj_add_style(right, &styles.scrollbar, LV_PART_SCROLLBAR);
-    display_create(left, right);
+    lv_obj_set_style_pad_ver(body, ui_px(12), 0);
+    lv_obj_set_style_pad_hor(body, ui_px(UI_GUTTER), 0);
+    lv_obj_set_scrollable(body, true);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_add_style(body, &styles.scrollbar, LV_PART_SCROLLBAR);
+    build_alarm(body);
+    display_create(body);
 
     /* Link last in the focus order */
     lv_group_add_obj(lv_group_get_default(), link);

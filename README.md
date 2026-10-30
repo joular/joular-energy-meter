@@ -19,10 +19,10 @@ Similar to our powerful command-line tool, [PowerJoular](https://github.com/joul
 ## :rocket: Features
 
 - Monitor CPU, GPU and total power, and the CPU load of the machine and of the process you follow
-- The energy used since the start, on a meter-style counter, plus average, peak and lowest power
-- Carbon emissions, now and since the start, for the electricity of a country, an energy source or your own value
-- A chart of the last 120 measurements (two minutes at 1 s)
-- CSV files in PowerJoular's format, written live or exported from the chart
+- The energy used since the start, the average power, its spread, and a year at that average
+- Carbon emissions since the start, for the electricity of a country, an energy source or your own value
+- A chart of the last 120 measurements (two minutes at 1 s) of one source at a time, with its highest and lowest
+- CSV files in PowerJoular's format, written while measuring
 - Runs on Linux, Windows, macOS and FreeBSD, and has the same UI and look&feel on all of them
 
 A process that has ended or can't be read shows a dash, not 0 %, and is written as `-1` in the
@@ -142,16 +142,17 @@ CPU load always works. Power reading may need some access depending on each OS, 
 The top bar has options to: *Measure* the whole machine, a process (by ID) or an
 application (by name), *every* interval, and optionally *Record to* a CSV file, typed or chosen with **Browse**. Press **Start**
 (or Enter).
-While measuring, the target and the file are locked, while the measurement interval can still be changed, which restarts the chart.
-**Pause** stops the clock and the energy count until you resume.
+While measuring, the top bar says what is measured and where it is recorded, with the time measured and the number of measurements beside Pause. Only the interval can still be changed, which restarts the chart.
+**Pause** stops the clock and the energy count until you resume. Problems, and a field left empty, show in a banner under the top bar.
 
-- **Meter**: the machine's power, the followed program's power next to it, the energy counter (joules, then kJ and MJ), and a disc that turns with the energy used.
-- **Chart**: the last 120 measurements. **Export** asks where to save them, `joularenergymeter-trend.csv` in the folder the app was started from at first (the home folder when started from Finder or a menu), then the last file exported. It never writes over the files being recorded.
-- **Right column**: processor, graphics and CPU load, now and since the start, with the CPU/GPU split; the followed program's power and its share of the CPU and of the machine; carbon emissions (below); and session figures (average, standard deviation, highest and lowest with their time, a year at the current average, measurements taken and missed).
+- **Readings**: the followed program and the whole machine side by side, each with its power now, and its energy and carbon emissions since the start. The program's share of the machine's power is next to its name. After Stop, the power becomes the session's average.
+- **Machine breakdown**: the processor and the graphics card, with their share of the machine.
+- **Carbon intensity**: the electricity the emissions are counted for (below).
+- **Chart**: the last 120 measurements of the program, the machine, the processor or the graphics card, chosen above it, with the average since the start and the highest and lowest points shown. Under it: the CPU load (for the program, its share of the CPU), the spread of the power since the start (standard deviation), and a year at the average.
 - **Status bar**: the last message. Errors stay highlighted until the next one.
-- **File browser** (Browse, Export): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels. Export asks before writing over a file that exists.
+- **File browser** (Browse): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels.
 
-The followed program's *Power* is its share of the processor's power only: the processor's power times the program's CPU load over the machine's, as PowerJoular counts it; the graphics card isn't attributed. *Share of CPU* is the fraction of the machine's processing capacity it used (all of one core out of eight is 12.5 %), not of the processor's power. *Share of total* divides its power by the machine's CPU + GPU power.
+The followed program's *Power* is its share of the processor's power only: the processor's power times the program's CPU load over the machine's, as PowerJoular counts it; the graphics card isn't attributed. *Share of CPU* is the fraction of the machine's processing capacity it used (all of one core out of eight is 12.5 %), not of the processor's power. Its share of the machine divides its power by the machine's CPU + GPU power.
 
 When you follow a process or application, a *second* CSV file is written next to the first (`power-<pid>.csv` or `power-<name>.csv` for `power.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
 
@@ -163,7 +164,7 @@ As root, the application only writes to plain files (no links), and files it cre
 
 ## Carbon emissions
 
-The *Carbon emissions* panel turns power into grams of CO2 equivalent an hour, and the energy since the start into grams, for the machine and the followed program. They are counted for:
+The energy since the start is turned into grams of CO2 equivalent, for the machine and the followed program, with the electricity chosen under *Carbon intensity*:
 
 - **Country**: the country's yearly average carbon intensity, from [Ember's yearly electricity data](https://ember-energy.org/data/yearly-electricity-data/), over the life cycle of the power plants. The country of the time zone is chosen at start (on Windows, the one of the region setting), or the world's average.
 - **Energy source**: electricity from a single source, such as your own solar panels, with the IPCC's life-cycle medians (AR5, the figures Ember uses).

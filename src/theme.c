@@ -29,8 +29,6 @@ static const uint32_t palette[TOKEN_COUNT] = {
     [TOKEN_FOCUS] = 0xa86400, [TOKEN_OFF] = 0x758a8d,
     [TOKEN_GO] = 0x1f7568, [TOKEN_GO_HOVER] = 0x1a675b, [TOKEN_GO_PRESSED] = 0x15584e,
     [TOKEN_HALT] = 0xc4381f, [TOKEN_HALT_HOVER] = 0xad301a, [TOKEN_HALT_PRESSED] = 0x982a17,
-    [TOKEN_REGISTER] = 0x10262b, [TOKEN_WHEEL] = 0xeef5f5, [TOKEN_WHEEL_LEAD] = 0x81979a,
-    [TOKEN_DISC] = 0xcbdcde, [TOKEN_DISC_TICK] = 0x5f7b80,
     [TOKEN_LAMP_OFF] = 0x758a8d, [TOKEN_LAMP_RUN] = 0x1e7d43, [TOKEN_LAMP_WAIT] = 0x9a6a00,
     [TOKEN_ALARM] = 0xf6ebc8, [TOKEN_ALARM_EDGE] = 0xd9b55a, [TOKEN_ALARM_TEXT] = 0x4a3500,
     [TOKEN_TOTAL] = 0x12292e, [TOKEN_CPU] = 0x2d6a8e, [TOKEN_GPU] = 0x8a6420, [TOKEN_TARGET] = 0x9a2450,
@@ -84,7 +82,7 @@ static bool even_digit(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, uint32_t
     return true;
 }
 
-/* Each size made on first use and cached, never freed: the program uses eight of the slots.
+/* Each size made on first use and cached, never freed: the program uses about fifteen slots.
  * The built-in font, with a word on stderr, if the TTF can't be made (out of memory) or the
  * cache is full. */
 static const lv_font_t *barlow(bool figures, int32_t logical)
@@ -190,9 +188,7 @@ void theme_init(lv_display_t *disp)
     text(&styles.tone[TONE_TEXT], TOKEN_TEXT);
     text(&styles.tone[TONE_MUTED], TOKEN_MUTED);
     text(&styles.tone[TONE_FAINT], TOKEN_FAINT);
-    text(&styles.tone[TONE_ERROR], TOKEN_ERROR);
     text(&styles.tone[TONE_ACCENT], TOKEN_ACCENT);
-    text(&styles.tone[TONE_WHEEL], TOKEN_WHEEL);
 
     /* Eased state changes (hover, press, focus, disabled) */
     lv_style_transition_dsc_init(&eased, changing, lv_anim_path_ease_out, THEME_EASE_MS, 0, NULL);
@@ -216,6 +212,12 @@ void theme_init(lv_display_t *disp)
     lv_style_set_border_color(&styles.halt, theme_color(TOKEN_HALT));
     fill(&styles.halt_hover, TOKEN_HALT_HOVER);
     fill(&styles.halt_pressed, TOKEN_HALT_PRESSED);
+    /* Chosen choice: accent, plate-coloured text */
+    fill(&styles.chosen, TOKEN_ACCENT);
+    lv_style_set_border_color(&styles.chosen, theme_color(TOKEN_ACCENT));
+    text(&styles.chosen, TOKEN_PLATE);
+    lv_style_set_bg_color(&styles.chosen_hover, lv_color_darken(theme_color(TOKEN_ACCENT), LV_OPA_10));
+    lv_style_set_bg_color(&styles.chosen_pressed, lv_color_darken(theme_color(TOKEN_ACCENT), LV_OPA_20));
     lv_style_set_opa(&styles.disabled, LV_OPA_40);
     /* Disabled button: outline only */
     lv_style_set_bg_opa(&styles.off, LV_OPA_TRANSP);
@@ -280,15 +282,6 @@ void theme_init(lv_display_t *disp)
     text(&styles.menu_hover, TOKEN_TEXT);
     fill(&styles.menu_checked, TOKEN_TEXT);
     text(&styles.menu_checked, TOKEN_PLATE);
-
-    /* Register wheels, red for tenths, and the disc slot */
-    fill(&styles.wheel, TOKEN_REGISTER);
-    lv_style_set_radius(&styles.wheel, ui_px(2));
-    lv_style_set_clip_corner(&styles.wheel, false);
-    fill(&styles.wheel_red, TOKEN_HALT);
-    fill(&styles.slot, TOKEN_REGISTER);
-    lv_style_set_radius(&styles.slot, ui_px(4));
-    lv_style_set_pad_all(&styles.slot, ui_px(4));
 
     lv_style_set_radius(&styles.lamp, LV_RADIUS_CIRCLE);
     lv_style_set_bg_opa(&styles.lamp, LV_OPA_COVER);

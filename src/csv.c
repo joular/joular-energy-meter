@@ -67,9 +67,10 @@ static wchar_t *full_path(const char *path, wchar_t *out, int n)
 }
 #endif
 
-/* Runs as root, so only write to a regular file with a single link, never through a symlink
- * that could point anywhere. Files created under sudo are chowned to SUDO_UID/SUDO_GID. */
-static FILE *open_csv(const char *name, bool append)
+/* Opens name to append to it. Runs as root, so only write to a regular file with a single
+ * link, never through a symlink that could point anywhere. Files created under sudo are
+ * chowned to SUDO_UID/SUDO_GID. */
+static FILE *open_csv(const char *name)
 {
 #ifdef PJ_WINDOWS
     wchar_t w[PATH_MAX];
@@ -78,9 +79,9 @@ static FILE *open_csv(const char *name, bool append)
         errno = ENAMETOOLONG;
         return NULL;
     }
-    return _wfopen(w, append ? L"a" : L"w");
+    return _wfopen(w, L"a");
 #else
-    int flags = O_WRONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (append ? O_APPEND : 0);
+    int flags = O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
     int fd = open(name, flags | O_CREAT | O_EXCL, 0644);
     bool created = fd >= 0;
     const char *uid = getenv("SUDO_UID"), *gid = getenv("SUDO_GID");
@@ -94,8 +95,8 @@ static FILE *open_csv(const char *name, bool append)
 
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1)
         errno = ELOOP;   /* reported as a link */
-    else if (append || ftruncate(fd, 0) == 0)
-        f = fdopen(fd, append ? "a" : "w");
+    else
+        f = fdopen(fd, "a");
 
     if (f == NULL) {
         int reason = errno;
@@ -176,7 +177,7 @@ static bool write_line(FILE *f, const char *line)
 /* Opens the file for the session's rows, with the header first if it is new or empty */
 static FILE *open_rows(const char *name, const char *header)
 {
-    FILE *f = open_csv(name, true);
+    FILE *f = open_csv(name);
 
     if (f != NULL && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0 && !write_line(f, header)) {
         int reason = errno;
@@ -248,79 +249,6 @@ bool csv_is_recording(void)
 const char *csv_recording_file(void)
 {
     return recording ? system_path : "";
-}
-
-/* New file with header and all kept points, gaps skipped. of_target picks the target
- * columns. Returns rows written, or -1. */
-static int write_file(const char *name, bool of_target)
-{
-    FILE *f = open_csv(name, false);
-    char row[256];
-    int written = 0;
-    bool ok;
-
-    if (f == NULL)
-        return -1;
-
-    ok = fprintf(f, "%s\n", of_target ? TARGET_HEADER : SYSTEM_HEADER) > 0;
-
-    for (int i = 1; ok && i <= history_count(); i++) {
-        const history_point *p = history_get(i);
-
-        if (p->taken == 0)
-            continue;
-        ok = fprintf(f, "%s\n", of_target ? target_row(p, row, sizeof row)
-                                          : system_row(p, row, sizeof row)) > 0;
-        written++;
-    }
-
-    return fclose(f) == 0 && ok ? written : -1;
-}
-
-/* Same existing file, one path may be relative or through a link */
-static bool same_file(const char *a, const char *b)
-{
-#ifdef PJ_WINDOWS
-    wchar_t x[PATH_MAX], y[PATH_MAX];
-    return full_path(a, x, PATH_MAX) && full_path(b, y, PATH_MAX) && _wcsicmp(x, y) == 0;
-#else
-    struct stat s, u;
-    return stat(a, &s) == 0 && stat(b, &u) == 0 && s.st_dev == u.st_dev && s.st_ino == u.st_ino;
-#endif
-}
-
-static bool recorded_to(const char *file)
-{
-    return recording && (same_file(file, system_path) || same_file(file, target_path));
-}
-
-int csv_save_history(const char *system_file, const target *t)
-{
-    char target_file[sizeof target_path];
-    int written;
-
-    trouble[0] = '\0';
-    csv_target_file(system_file, t, target_file, sizeof target_file);
-
-    /* Overwriting it would wipe the recording */
-    if (recorded_to(system_file) || recorded_to(target_file)) {
-        snprintf(trouble, sizeof trouble, "%s is being recorded to, choose another file",
-                 csv_file_name(recorded_to(system_file) ? system_file : target_file));
-        return -1;
-    }
-
-    written = write_file(system_file, false);
-    if (written < 0) {
-        cannot_write(system_file);
-        return -1;
-    }
-
-    if (t->kind != TARGET_WHOLE_SYSTEM && write_file(target_file, true) < 0) {
-        cannot_write(target_file);
-        return -1;
-    }
-
-    return written;
 }
 
 const char *csv_trouble(void)

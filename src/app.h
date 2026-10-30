@@ -226,9 +226,6 @@ double history_peak(series s);
 
 #define CSV_DEFAULT_FILE "joularenergymeter-power.csv"
 
-/* Proposed by Export the first time */
-#define CSV_EXPORT_FILE "joularenergymeter-trend.csv"
-
 /* power.csv gives power-<pid>.csv or power-<app>.csv like PowerJoular; system_file
  * for the whole system. Returns out. */
 const char *csv_target_file(const char *system_file, const target *t, char *out, size_t n);
@@ -244,10 +241,6 @@ bool csv_is_recording(void);
 
 /* "" when not recording */
 const char *csv_recording_file(void);
-
-/* Overwrites the files with the whole history, never the files being recorded. Returns rows
- * written, -1 on error. */
-int csv_save_history(const char *system_file, const target *t);
 
 /* Last write error, with strerror */
 const char *csv_trouble(void);
@@ -309,8 +302,7 @@ char *fmt_span(char *buf, size_t n, double seconds);
 /* -------------------------------------------------------------------------------------- */
 /* The look                                                                  (theme.c)    */
 /* -------------------------------------------------------------------------------------- */
-/* Electricity meter look: pale teal housing, white dial plates, dark register with rolling
- * digits (tenths in red), disc edge in a slot. Teal/red for Start/Stop, amber for focus.
+/* Pale teal housing, white plates, teal/red for Start/Stop, amber for focus and warnings.
  * Colours are named by use. */
 
 typedef enum {
@@ -322,9 +314,7 @@ typedef enum {
     TOKEN_FOCUS,                                      /* focus ring */
     TOKEN_OFF,                                        /* disabled button */
     TOKEN_GO, TOKEN_GO_HOVER, TOKEN_GO_PRESSED,       /* Start */
-    TOKEN_HALT, TOKEN_HALT_HOVER, TOKEN_HALT_PRESSED, /* Stop, and the disc mark */
-    TOKEN_REGISTER, TOKEN_WHEEL, TOKEN_WHEEL_LEAD,    /* register; digits; leading zeros */
-    TOKEN_DISC, TOKEN_DISC_TICK,                      /* disc edge and ticks */
+    TOKEN_HALT, TOKEN_HALT_HOVER, TOKEN_HALT_PRESSED, /* Stop */
     TOKEN_LAMP_OFF, TOKEN_LAMP_RUN, TOKEN_LAMP_WAIT,  /* state lamp */
     TOKEN_ALARM, TOKEN_ALARM_EDGE, TOKEN_ALARM_TEXT,  /* warning */
     TOKEN_TOTAL, TOKEN_CPU, TOKEN_GPU, TOKEN_TARGET,  /* series colours */
@@ -352,19 +342,19 @@ const lv_font_t *ui_figures(int32_t logical);
 
 /* Text styles. All text is sentence case. */
 typedef enum {
-    TEXT_BODY,            /* 13 px */
     TEXT_MUTED,           /* 13 px, muted */
     TEXT_CAPTION,         /* 12 px, muted */
-    TEXT_ERROR,           /* 13 px, error colour */
     TEXT_LINK,            /* 12 px, accent */
     TEXT_WORD,            /* 15 px, muted, words between the top-bar controls */
-    TEXT_TITLE,           /* 15 px, plate title, row name */
-    TEXT_READING,         /* 64 px figures, machine power */
-    TEXT_READING_UNIT,    /* 22 px, muted */
-    TEXT_READING_SECOND,  /* 40 px figures, target colour, target power */
-    TEXT_ROW_FIGURE,      /* 20 px figures, row value */
-    TEXT_FIGURES,         /* 15 px figures, muted, time and totals by the register */
-    TEXT_WHEEL            /* 30 px figures, register digit */
+    TEXT_TITLE,           /* 16 px, plate title, reading name, run state */
+    TEXT_READING,         /* 52 px figures, first reading's power */
+    TEXT_READING_UNIT,    /* 20 px, muted */
+    TEXT_READING_SECOND,  /* 38 px figures, the machine's power beside the program's */
+    TEXT_SECOND_UNIT,     /* 18 px, muted */
+    TEXT_GROUP_FIGURE,    /* 28 px figures, energy and carbon */
+    TEXT_GROUP_UNIT,      /* 16 px, muted */
+    TEXT_ROW_FIGURE,      /* 18 px figures, breakdown value */
+    TEXT_FIGURES          /* 15 px figures, muted, elapsed time */
 } text_role;
 
 lv_obj_t *kit_label(lv_obj_t *parent, const char *text, text_role role);
@@ -390,26 +380,11 @@ lv_obj_t *kit_panel(lv_obj_t *parent, const char *title, int32_t gap);
 lv_obj_t *kit_panel_strip(lv_obj_t *panel);
 lv_obj_t *kit_panel_body(lv_obj_t *panel);
 
-/* Dotted leader between a name and its value, fills the rest of the row */
-lv_obj_t *kit_leader(lv_obj_t *parent);
-
 /* Amber warning row; plain labels inside get its text colour */
 lv_obj_t *kit_alarm(lv_obj_t *parent);
 
-/* Series marker: dot next to a total, or short line (wide) in a legend */
-lv_obj_t *kit_dot(lv_obj_t *parent, theme_token color, bool wide);
-
-
-/* Register of count digit wheels, last one red (tenths).
- * kit_register_set takes count digits; changed wheels roll (or jump if !roll), zeros left
- * of the units wheel are dimmed. */
-lv_obj_t *kit_register(lv_obj_t *parent, int count);
-void kit_register_set(lv_obj_t *reg, const char *digits, bool roll);
-
-/* Disc edge in its slot with a red mark. Single instance.
- * kit_disc_turn sets total turns since start: eases forward when roll, otherwise jumps. */
-lv_obj_t *kit_disc(lv_obj_t *parent);
-void kit_disc_turn(lv_obj_t *disc, double turns, bool roll);
+/* Series marker, a dot */
+lv_obj_t *kit_dot(lv_obj_t *parent, theme_token color);
 
 /* Glows when lit */
 lv_obj_t *kit_lamp(lv_obj_t *parent);
@@ -428,6 +403,12 @@ void kit_button_set(lv_obj_t *button, const char *symbol, const char *text, butt
 lv_obj_t *kit_entry(lv_obj_t *parent, const char *placeholder, bool digits_only);
 void kit_entry_set_invalid(lv_obj_t *entry, bool invalid);
 
+/* One of a row of choices, with the series dot. Chosen = LV_STATE_CHECKED, set by the caller.
+ * on_click gets LV_EVENT_CLICKED with user_data. kit_choice_set changes the name. */
+lv_obj_t *kit_choice(lv_obj_t *parent, theme_token color, const char *text, lv_event_cb_t on_click,
+                     void *user_data);
+void kit_choice_set(lv_obj_t *choice, const char *text);
+
 /* on_change gets LV_EVENT_VALUE_CHANGED; read it with lv_obj_has_state(sw, LV_STATE_CHECKED) */
 lv_obj_t *kit_switch(lv_obj_t *parent, lv_event_cb_t on_change, void *user_data);
 
@@ -445,16 +426,16 @@ void kit_show(lv_obj_t *obj, bool visible);
 /* Disabled: greyed, ignores mouse and keyboard */
 void kit_enable(lv_obj_t *obj, bool enabled);
 
-/* The file browser in this look, to save a CSV file: start as in file_browser_options, name
- * proposed. It asks before a file is replaced, not when rows are appended to it. on_choose
- * gets the full path. */
-void kit_save_csv(const char *title, const char *start, const char *name, bool appends, file_browser_cb on_choose);
+/* The file browser in this look, to choose the CSV file to record to: start as in
+ * file_browser_options, name proposed. Rows are appended to a file that exists, so it never
+ * asks to replace one. on_choose gets the full path. */
+void kit_save_csv(const char *title, const char *start, const char *name, file_browser_cb on_choose);
 
 /* -------------------------------------------------------------------------------------- */
 /* The window                                                                (ui.c)       */
 /* -------------------------------------------------------------------------------------- */
-/* Single screen built once: controls along the top, meter and trend next to the register
- * and readings, status bar at the bottom. */
+/* Single screen built once: controls along the top, then a column of a warning banner, the
+ * readings, the breakdown and carbon intensity, and the chart; status bar at the bottom. */
 
 /* Session state, drives the lamp, buttons and display */
 typedef enum { RUN_IDLE, RUN_STARTING, RUN_LIVE, RUN_PAUSED } run_state;
@@ -469,29 +450,35 @@ void ui_build(void);
 void ui_message(const char *text);
 void ui_trouble(const char *text);
 
+/* Warning banner above the readings: title, text under it (may be ""), and a command to copy
+ * on its own line (may be ""). Replaces the one shown. */
+void ui_alarm(const char *title, const char *text, const char *command);
+void ui_alarm_clear(void);
+
 /* -------------------------------------------------------------------------------------- */
 /* The controls and the display                           (ui_controls.c, ui_display.c)   */
 /* -------------------------------------------------------------------------------------- */
 
 /* Top bar: target, interval, CSV recording switch, state lamp and run buttons.
- * Start validates the fields, shows errors next to the file field, and starts CSV
- * recording if asked. */
+ * Start validates the fields, shows errors in the banner, and starts CSV recording if
+ * asked. */
 lv_obj_t *controls_create(lv_obj_t *parent);
 
-/* Updates lamp and buttons; locks the choices while running */
-void controls_show_run(run_state run);
+/* Updates lamp and buttons; the choices become plain text while running. stopped: idle, the
+ * last session's values still shown */
+void controls_show_run(run_state run, bool stopped);
 
-/* Meter, trend, register and readings. Reports arrive via display_report on the main
- * thread. Values stay on screen after Stop until the next Start. Builds into the left and
- * right columns. */
-void display_create(lv_obj_t *left, lv_obj_t *right);
+/* Measured time and count beside the lamp */
+void controls_show_progress(double elapsed, int samples, int missed);
+
+/* Readings, breakdown, carbon intensity and chart, built into column. Reports arrive via
+ * display_report on the main thread. Values stay on screen after Stop until the next
+ * Start. */
+void display_create(lv_obj_t *column);
 
 void display_start(const target *t);
 void display_stop(void);
 void display_pause(bool paused);
-
-/* Asks for a file, then writes the trend to it */
-void display_export(void);
 
 /* Call after set_interval: updates the sampler and the trend span */
 void display_interval_changed(void);
