@@ -26,11 +26,6 @@ disabled = true
 joularcore = "~0.1.0"
 cpuload = "~0.1.0"
 
-# Temporary: local checkouts until 0.1.0 is in the Alire index
-[[pins]]
-joularcore = { path = "../joularcore" }
-cpuload = { path = "../cpuload" }
-
 # System package: alr checks for it, offers to install it and points the compiler at it.
 # No FreeBSD package in Alire, use pkg install sdl2 there
 [[depends-on]]
