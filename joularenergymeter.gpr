@@ -61,20 +61,24 @@ project Joularenergymeter is
             Defines := ("-DPJ_MACOS");
             --  No default rpaths into build folders or the toolchain. IOKit keeps the machine awake while measuring.
             --  dead_strip drops unused code, about a third of the binary.
-            OS_Libs := ("-nodefaultrpaths", "-Wl,-dead_strip") & Dev_Libs
+            --  objc: the title bar's look, set through the Objective-C runtime
+            OS_Libs := ("-nodefaultrpaths", "-Wl,-dead_strip", "-lobjc") & Dev_Libs
                        & ("-framework", "IOKit", "-framework", "CoreFoundation");
         when "windows" =>
             --  GUI subsystem so no console opens; SDL2main provides WinMain
             Default_SDL2_Libs := "-lmingw32 -lSDL2main -lSDL2 -mwindows";
             Defines := ("-DPJ_WINDOWS");
+            --  gc-sections drops unused code, like dead_strip on macOS
+            --  dwmapi: the title bar's look
+            OS_Libs := ("-Wl,--gc-sections", "-ldwmapi");
         when "linux" =>
             --  glibc has round, ceil, lround and fmax in libm, nothing else links it
-            OS_Libs := ("-lm");
+            OS_Libs := ("-lm", "-Wl,--gc-sections");
         when "freebsd" =>
             Default_SDL2_Cflags := "-I/usr/local/include";
             Default_SDL2_Libs := "-L/usr/local/lib -lSDL2";
             Defines := ("-DPJ_FREEBSD");
-            OS_Libs := ("-lm");
+            OS_Libs := ("-lm", "-Wl,--gc-sections");
     end case;
 
     Include_Switches := ("-I" & Joularenergymeter'Project_Dir,
@@ -99,7 +103,8 @@ project Joularenergymeter is
 
     package Compiler is
         for Switches ("C") use
-            ("-O2", "-std=gnu11", "-Wall", "-Wextra", "-DLV_CONF_INCLUDE_SIMPLE")
+            ("-O2", "-std=gnu11", "-Wall", "-Wextra", "-ffunction-sections", "-fdata-sections",
+             "-DLV_CONF_INCLUDE_SIMPLE")
             & Defines & Include_Switches;
     end Compiler;
 

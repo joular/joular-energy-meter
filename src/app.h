@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "lvgl/lvgl.h"
 
@@ -49,17 +50,21 @@ extern const char *program_path;
 /* What is measured                                                          (app.c)      */
 /* -------------------------------------------------------------------------------------- */
 
-typedef enum { TARGET_WHOLE_SYSTEM, TARGET_PROCESS, TARGET_APPLICATION } target_kind;
+typedef enum { TARGET_WHOLE_SYSTEM, TARGET_PROCESS, TARGET_APPLICATION, TARGET_COMMAND } target_kind;
 
-/* Whole machine is always measured, plus optionally one process or app */
+/* Whole machine is always measured, plus optionally one process, app or command */
 typedef struct target {
     target_kind kind;
-    unsigned int pid;   /* TARGET_PROCESS */
-    char app[128];      /* TARGET_APPLICATION, program name */
+    unsigned int pid;     /* TARGET_PROCESS, and TARGET_COMMAND once started */
+    char app[128];        /* TARGET_APPLICATION, program name */
+    char command[1024];   /* TARGET_COMMAND, as typed */
 } target;
 
-/* "Process 2814" or "firefox"; "" for the whole system. Returns buf. */
+/* "Process 2814", "firefox" or the command; "" for the whole system. Returns buf. */
 const char *target_name(const target *t, char *buf, size_t n);
+
+/* "Application firefox", "Process 2814", "Command python3 bench.py", "Whole machine" */
+const char *target_heading(const target *t, char *buf, size_t n);
 
 /* Sampling interval stops.
  * Under 1 s the CPU counters are too coarse (CPU Load reads a process in 10 ms units on
@@ -96,6 +101,8 @@ typedef struct cycle {
     double gpu_power;
     double total_power;
     double target_power;  /* target's share of CPU power; 0 for whole system, UNREADABLE when not read */
+    double self_usage;    /* this meter's share of the machine, UNREADABLE when not read */
+    double plug_power;    /* watts at the plug meter, UNREADABLE without one or a fresh row */
 } cycle;
 
 /* -------------------------------------------------------------------------------------- */
@@ -104,9 +111,14 @@ typedef struct cycle {
 /* Opens Joular Core, samples CPU load, computes watts and session energy. No LVGL here.
  * Joular Core isn't thread safe: only call from the sampler.c thread. */
 
+/* A plug meter is followed through the CSV file it writes, "time;watts" or "time,watts" per
+ * row as PowerSpyCli does: a cycle gets the average of the rows added during it, or the last one,
+ * and none after this long without a new row */
+#define PLUG_STALE_SECONDS 5.0
+
 /* Opens the hardware and takes the first baseline. Still starts with no readable power
- * source, see monitor_cpu_available. */
-void monitor_start(const target *t);
+ * source, see monitor_cpu_available. plug: the plug meter's file, "" for none. */
+void monitor_start(const target *t, const char *plug);
 
 /* On macOS this stops the powermetrics child. Safe when nothing runs. */
 void monitor_stop(void);
@@ -140,12 +152,36 @@ typedef struct totals {
     double target_energy;  /* only cycles where the target was read */
     bool target_read;      /* target read at least once */
     double elapsed;        /* seconds */
+    double plug_energy;    /* only cycles with a plug reading, over plug_time */
+    double plug_time;
+    bool plug_read;
 } totals;
 
 totals monitor_session(void);
 
 /* Why the last start or step failed, or why its target couldn't be read; "" if nothing */
 const char *monitor_trouble(void);
+
+/* The followed process or command has ended; exit_code is the command's, else -1 */
+bool monitor_ended(int *exit_code);
+
+/* -------------------------------------------------------------------------------------- */
+/* A command to measure                                                      (command.c)  */
+/* -------------------------------------------------------------------------------------- */
+/* Run in the current folder through /bin/sh on POSIX, as a program and its arguments on
+ * Windows. As the user: under sudo, the one who ran sudo. In a session of its own, so it goes
+ * on after Stop. One at a time, measuring thread only. */
+
+/* False, with the reason in trouble, if it couldn't start */
+bool command_start(const char *line, unsigned int *pid, char *trouble, size_t n);
+
+/* True once it has ended, with its exit status (128 + the signal's number when killed, -1 if
+ * unknown) and its own CPU time at the end in microseconds (-1 if unknown), which CPU Load
+ * can't read from an ended process */
+bool command_ended(int *exit_code, int64_t *used);
+
+/* Stops following it, it goes on */
+void command_forget(void);
 
 /* -------------------------------------------------------------------------------------- */
 /* The measuring thread                                                      (sampler.c)  */
@@ -169,6 +205,12 @@ typedef struct report {
     totals sum;                                     /* REPORT_MEASURED */
     char trouble[128];                              /* why open or reading failed, or why the
                                                      * target couldn't be read */
+    int dropped;                                    /* reports lost just before this one, the
+                                                     * queue being full */
+    bool ended;                                     /* the followed process or command has
+                                                     * ended (at REPORT_STARTED: the command
+                                                     * couldn't start) */
+    int exit_code;                                  /* the command's once ended, -1 if unknown */
 } report;
 
 /* on_report gets every report of the current session. False (reason on stderr) if the
@@ -184,6 +226,9 @@ void sampler_stop(void);
 
 void sampler_pause(bool paused);
 void sampler_set_interval(double interval);
+
+/* The plug meter's file for the next sessions, "" for none */
+void sampler_set_plug(const char *file);
 
 /* Passes pending reports to on_report. Called by the main loop when woken. */
 void sampler_deliver(void);
@@ -211,7 +256,7 @@ const history_point *history_get(int i);
 /* Seconds covered by a full history at the current interval */
 double history_span(void);
 
-typedef enum { SERIES_TOTAL, SERIES_CPU, SERIES_GPU, SERIES_TARGET } series;
+typedef enum { SERIES_TOTAL, SERIES_CPU, SERIES_GPU, SERIES_TARGET, SERIES_PLUG, SERIES_COUNT } series;
 
 double history_value(const history_point *p, series s);
 
@@ -248,8 +293,42 @@ const char *csv_trouble(void);
 /* Basename */
 const char *csv_file_name(const char *path);
 
-/* Absolute folder of an existing file; false if it can't be resolved */
-bool csv_folder_of(const char *file, char *out, size_t n);
+/* Opens name (UTF-8) to append to it, or to replace what it holds. Runs as root, so only a
+ * regular file with a single link, never through a symlink that could point anywhere. Files
+ * created under sudo are chowned to SUDO_UID/SUDO_GID. NULL with errno set on failure. */
+FILE *open_user_file(const char *name, bool append);
+
+#ifdef PJ_WINDOWS
+/* A UTF-8 path for the wide calls */
+bool wide(const char *path, wchar_t *out, int n);
+#else
+#include <sys/types.h>
+/* Run as root by sudo, or by Restart with admin rights: the user who asked, from SUDO_UID and
+ * SUDO_GID */
+bool sudo_user(uid_t *uid, gid_t *gid);
+#endif
+
+/* -------------------------------------------------------------------------------------- */
+/* Choices kept between launches                                             (settings.c) */
+/* -------------------------------------------------------------------------------------- */
+/* key=value lines in the settings folder of whoever started the app (under sudo, of the user
+ * who ran sudo): Application Support on macOS, ~/.config on Linux and FreeBSD, %APPDATA% on
+ * Windows. A missing or unreadable file gives the defaults. */
+
+/* Once, before ui_build */
+void settings_load(void);
+
+/* NULL when not kept */
+const char *settings_get(const char *key);
+
+/* Where the kept value is among names, otherwise when it isn't */
+int settings_index(const char *key, const char *const names[], int count, int otherwise);
+
+void settings_set(const char *key, const char *value);
+
+/* Asks the controls and the display for their choices, then writes the file. A failure only
+ * goes to stderr. */
+void settings_save(void);
 
 /* -------------------------------------------------------------------------------------- */
 /* Carbon intensity of electricity                                           (carbon.c)   */
@@ -260,6 +339,7 @@ bool csv_folder_of(const char *file, char *out, size_t n);
  * medians. */
 
 #define CARBON_FILE "carbon-intensity.csv"
+#define CARBON_MONTHLY_FILE "carbon-intensity-monthly.csv"
 
 typedef struct electricity {
     char code[4];     /* ISO 3166-1 alpha-3 of a country, "" for the world or a source */
@@ -278,6 +358,10 @@ const electricity *carbon_country(int i);
 /* Country of the time zone (on Windows, of the region setting), else the world */
 int carbon_local_country(void);
 
+/* A country's (or the world's) intensity in a calendar month, 1 to 12, from the latest year
+ * Ember has that month; false where Ember has no monthly figures (fewer countries) */
+bool carbon_month(const electricity *e, int month, int *year, double *grams);
+
 /* From the lowest to the highest */
 int carbon_source_count(void);
 const electricity *carbon_source(int i);
@@ -289,6 +373,9 @@ const electricity *carbon_source(int i);
 
 /* Rounded to decimals ("12.35" for 12.345 and 2) */
 char *fmt_number(char *buf, size_t n, double value, int decimals);
+
+/* Watts as a number, and its unit in unit: mW under 1 W, so a small figure never reads 0.0 */
+char *fmt_power(char *buf, size_t n, double watts, const char **unit);
 
 /* Unix time in seconds, as in PowerJoular's CSV */
 int64_t fmt_now(void);
@@ -302,35 +389,58 @@ char *fmt_span(char *buf, size_t n, double seconds);
 /* -------------------------------------------------------------------------------------- */
 /* The look                                                                  (theme.c)    */
 /* -------------------------------------------------------------------------------------- */
-/* Pale teal housing, white plates, teal/red for Start/Stop, amber for focus and warnings.
- * Colours are named by use. */
+/* Joular Code GUI's look, light or dark: a painted ground with two glows, frosted cards with a
+ * coloured tile, teal/red for Start/Stop, amber for focus and warnings. Colours are named by
+ * use. */
 
 typedef enum {
-    TOKEN_ENAMEL, TOKEN_ENAMEL_DEEP,                  /* housing; folds and rules */
-    TOKEN_PLATE, TOKEN_PLATE_HOVER, TOKEN_PLATE_PRESSED,   /* plate, field, plain button */
-    TOKEN_EDGE, TOKEN_GRID,                           /* control borders; trend grid */
+    TOKEN_ENAMEL, TOKEN_ENAMEL_DEEP, TOKEN_RULE,      /* ground; folds; rules in cards */
+    TOKEN_GROUND_END, TOKEN_GLOW_SEA, TOKEN_GLOW_SUN, /* the ground's gradient and glows */
+    TOKEN_PLATE, TOKEN_PLATE_HOVER, TOKEN_PLATE_PRESSED,   /* card, plain button */
+    TOKEN_GLASS_EDGE, TOKEN_SHADE,                    /* cards' edge; shadows and dimming */
+    TOKEN_EDGE, TOKEN_GRID,                           /* button borders; chart grid */
+    TOKEN_FIELD, TOKEN_FIELD_EDGE,                    /* fields and pickers */
     TOKEN_TEXT, TOKEN_MUTED, TOKEN_FAINT, TOKEN_ERROR,
-    TOKEN_ACCENT,                                     /* links */
+    TOKEN_ACCENT, TOKEN_ACCENT_SOFT,                  /* links, chosen; tinted */
     TOKEN_FOCUS,                                      /* focus ring */
     TOKEN_OFF,                                        /* disabled button */
     TOKEN_GO, TOKEN_GO_HOVER, TOKEN_GO_PRESSED,       /* Start */
     TOKEN_HALT, TOKEN_HALT_HOVER, TOKEN_HALT_PRESSED, /* Stop */
     TOKEN_LAMP_OFF, TOKEN_LAMP_RUN, TOKEN_LAMP_WAIT,  /* state lamp */
     TOKEN_ALARM, TOKEN_ALARM_EDGE, TOKEN_ALARM_TEXT,  /* warning */
-    TOKEN_TOTAL, TOKEN_CPU, TOKEN_GPU, TOKEN_TARGET,  /* series colours */
+    TOKEN_ENERGY, TOKEN_ON_ENERGY, TOKEN_ON_COLOUR,   /* amber tile; signs on tiles */
+    TOKEN_TILE_BLUE, TOKEN_TILE_TEAL, TOKEN_TILE_GREY,
+    TOKEN_TOTAL, TOKEN_CPU, TOKEN_GPU, TOKEN_TARGET, TOKEN_PLUG,  /* series colours */
     TOKEN_COUNT
 } theme_token;
 
+/* In the look in use */
 lv_color_t theme_color(theme_token t);
 
-/* Once, after the display exists and before any widget */
+/* After the display exists and the settings are loaded, before any widget; again at a new zoom
+ * or look. The look comes from the setting "look": light, dark, or the system's. */
 void theme_init(lv_display_t *disp);
+
+bool theme_is_dark(void);
+
+/* The logo, with its black lettering in the text's colour in the dark look */
+const void *theme_logo(const lv_image_dsc_t *logo);
 
 /* Logical pixels to screen pixels (x2 on Retina) */
 int32_t ui_px(int32_t logical);
 
-/* Embedded Barlow at a logical size. Falls back to Montserrat for LVGL symbols. */
+/* Embedded Barlow Medium at a logical size. Falls back to Lucide for LVGL symbols, then
+ * Montserrat. */
 const lv_font_t *ui_font(int32_t logical);
+
+/* Barlow SemiBold: titles and the chosen choice */
+const lv_font_t *ui_bold(int32_t logical);
+
+/* Lucide signs at Font Awesome codepoints LVGL has no symbol for */
+#define SYMBOL_SUN "\xEF\x86\x85"
+#define SYMBOL_MOON "\xEF\x86\x86"
+#define SYMBOL_CPU "\xEF\x8B\x9B"
+#define SYMBOL_PLUG "\xEF\x87\xA6"
 
 /* Barlow Semi Condensed, tabular digits so numbers don't jitter */
 const lv_font_t *ui_figures(int32_t logical);
@@ -374,11 +484,28 @@ lv_obj_t *kit_box(lv_obj_t *parent, bool vertical, int32_t gap);
 /* Lets children's outer drawing (focus rings etc.) spill reach logical pixels out of box */
 void kit_let_out(lv_obj_t *box, int32_t reach);
 
-/* Plate with a title row (none if title is NULL) and a body stacked gap logical pixels
- * apart. The title row has room for extra widgets beside the title. */
-lv_obj_t *kit_panel(lv_obj_t *parent, const char *title, int32_t gap);
+/* Frosted card: a head with a coloured tile (symbol, or three bars for NULL) and the title
+ * (none for NULL), then the caller's widgets (kit_panel_strip gives the head); and a body
+ * stacked gap logical pixels apart */
+lv_obj_t *kit_panel(lv_obj_t *parent, const char *symbol, theme_token tile, const char *title, int32_t gap);
 lv_obj_t *kit_panel_strip(lv_obj_t *panel);
 lv_obj_t *kit_panel_body(lv_obj_t *panel);
+
+/* A small tag, such as "Optional" */
+lv_obj_t *kit_chip(lv_obj_t *parent, const char *text);
+
+/* A card of the Setup page */
+lv_obj_t *kit_setup_card(lv_obj_t *page, const char *symbol, theme_token tile, const char *title);
+
+/* A setting in a card: its name and a short explanation at the left, its controls at the right,
+ * added to kit_row_controls. The name and explanation can change. */
+lv_obj_t *kit_row(lv_obj_t *panel, const char *name, const char *explanation);
+lv_obj_t *kit_row_controls(lv_obj_t *row);
+lv_obj_t *kit_row_name(lv_obj_t *row);
+lv_obj_t *kit_row_note(lv_obj_t *row);
+
+/* Square of colour with a sign half its size, logical px; three bars for symbol NULL */
+lv_obj_t *kit_tile(lv_obj_t *parent, const char *symbol, theme_token color, int32_t size);
 
 /* Amber warning row; plain labels inside get its text colour */
 lv_obj_t *kit_alarm(lv_obj_t *parent);
@@ -403,7 +530,10 @@ void kit_button_set(lv_obj_t *button, const char *symbol, const char *text, butt
 lv_obj_t *kit_entry(lv_obj_t *parent, const char *placeholder, bool digits_only);
 void kit_entry_set_invalid(lv_obj_t *entry, bool invalid);
 
-/* One of a row of choices, with the series dot. Chosen = LV_STATE_CHECKED, set by the caller.
+/* The sunken track that joins kit_choice choices */
+lv_obj_t *kit_choices(lv_obj_t *parent);
+
+/* One of a row of choices, with the series dot (none for TOKEN_COUNT). Chosen = LV_STATE_CHECKED, set by the caller.
  * on_click gets LV_EVENT_CLICKED with user_data. kit_choice_set changes the name. */
 lv_obj_t *kit_choice(lv_obj_t *parent, theme_token color, const char *text, lv_event_cb_t on_click,
                      void *user_data);
@@ -411,6 +541,12 @@ void kit_choice_set(lv_obj_t *choice, const char *text);
 
 /* on_change gets LV_EVENT_VALUE_CHANGED; read it with lv_obj_has_state(sw, LV_STATE_CHECKED) */
 lv_obj_t *kit_switch(lv_obj_t *parent, lv_event_cb_t on_change, void *user_data);
+
+/* Clicking label toggles control, sending it LV_EVENT_VALUE_CHANGED */
+void kit_switch_label(lv_obj_t *label, lv_obj_t *control);
+
+/* Copies text to the clipboard; key, a kit_button, says "Copied" for two seconds */
+void kit_copy(lv_obj_t *key, const char *text);
 
 /* Dropdown, options one per line, sized to the widest.
  * on_change gets LV_EVENT_VALUE_CHANGED; read it with lv_dropdown_get_selected. */
@@ -431,11 +567,33 @@ void kit_enable(lv_obj_t *obj, bool enabled);
  * asks to replace one. on_choose gets the full path. */
 void kit_save_csv(const char *title, const char *start, const char *name, file_browser_cb on_choose);
 
+/* The same, to choose a CSV file that exists */
+void kit_open_csv(const char *title, const char *start, file_browser_cb on_choose);
+
+/* A menu under button (over it when there is no room below): rows added with kit_menu_add,
+ * then kit_menu_open. on_pick gets the row's index, the menu closes itself. Esc or a click
+ * outside closes it too. */
+typedef void (*kit_menu_cb)(int row);
+lv_obj_t *kit_menu(lv_obj_t *button, kit_menu_cb on_pick);
+
+/* A dialog in the middle of the window, over a dimmed backdrop: its plate, width in logical px.
+ * Its keys join its keyboard group with kit_dialog_take; kit_dialog_close deletes it. */
+lv_obj_t *kit_dialog(int32_t width);
+void kit_dialog_take(lv_obj_t *plate, lv_obj_t *obj);
+void kit_dialog_close(lv_obj_t *plate);
+void kit_menu_add(lv_obj_t *menu, const char *title, bool chosen);
+void kit_menu_open(lv_obj_t *menu);
+
+/* Hover help: half a second over obj, and text shows in a small plate by it. obj becomes
+ * clickable, as hover only reaches that; a label doesn't join the keys for it. Called again,
+ * the text changes; "" shows none. Mouse only: say it in the window too when it matters. */
+void kit_tip(lv_obj_t *obj, const char *text);
+
 /* -------------------------------------------------------------------------------------- */
 /* The window                                                                (ui.c)       */
 /* -------------------------------------------------------------------------------------- */
-/* Single screen built once: controls along the top, then a column of a warning banner, the
- * readings, the breakdown and carbon intensity, and the chart; status bar at the bottom. */
+/* The header with the Setup and Readings tabs, the warning banner, the two pages, and the bar at
+ * the bottom with the session's state, messages and the main keys. */
 
 /* Session state, drives the lamp, buttons and display */
 typedef enum { RUN_IDLE, RUN_STARTING, RUN_LIVE, RUN_PAUSED } run_state;
@@ -443,38 +601,85 @@ typedef enum { RUN_IDLE, RUN_STARTING, RUN_LIVE, RUN_PAUSED } run_state;
 /* Margin around the plates, logical pixels */
 #define UI_GUTTER 16
 
+/* Most a Setup card widens to, logical pixels */
+#define SETUP_WIDTH 780
+
 void ui_build(void);
 
-/* Status bar message, prefixed with the time; stays until the next one.
+/* The pages, chosen by the header's tabs */
+typedef enum { PAGE_SETUP, PAGE_READINGS, PAGE_COUNT } ui_page;
+void ui_show_page(ui_page page);
+
+/* The zoom kept from the last time, before theme_init */
+void ui_zoom_init(void);
+
+/* Zoom from 80 to 150 %: step 1 or -1 to the next, 0 back to 100 %. Builds the screen again,
+ * keeping the choices, the session and the banner. */
+void ui_zoom(int step);
+
+/* The bar's message, prefixed with the time; stays until the next one.
  * ui_trouble is for errors and stays highlighted. */
 void ui_message(const char *text);
 void ui_trouble(const char *text);
 
-/* Warning banner above the readings: title, text under it (may be ""), and a command to copy
+/* Warning banner under the header: title, text under it (may be ""), and a command to copy
  * on its own line (may be ""). Replaces the one shown. */
 void ui_alarm(const char *title, const char *text, const char *command);
 void ui_alarm_clear(void);
+
+/* A key in the banner shown, before Copy command: on_click NULL shows it disabled, label NULL
+ * hides it. ui_alarm hides it. */
+void ui_alarm_action(const char *label, void (*on_click)(void));
 
 /* -------------------------------------------------------------------------------------- */
 /* The controls and the display                           (ui_controls.c, ui_display.c)   */
 /* -------------------------------------------------------------------------------------- */
 
-/* Top bar: target, interval, CSV recording switch, state lamp and run buttons.
+/* The idle power dialog (ui_idle.c): measures the whole machine for a while on its own, apart
+ * from the session on screen. on_use gets the processor's and the graphics card's average
+ * power when the user keeps them. idle_dialog_report takes the sampler's reports while it
+ * measures; idle_dialog_close stops it and closes it. */
+void idle_dialog_open(void (*on_use)(double cpu, double gpu));
+/* Opens it as the Measure key does (--idle) */
+void display_measure_idle(void);
+bool idle_dialog_report(const report *r);
+void idle_dialog_close(void);
+
+/* The What to measure card on the Setup page: target, interval, length, CSV recording.
  * Start validates the fields, shows errors in the banner, and starts CSV recording if
  * asked. */
-lv_obj_t *controls_create(lv_obj_t *parent);
+void controls_create(lv_obj_t *page);
 
-/* Updates lamp and buttons; the choices become plain text while running. stopped: idle, the
- * last session's values still shown */
+/* The bar's lamp, state, time and count, Pause and Start/Stop, after controls_create. Returns
+ * the box under the state, where the messages go. */
+lv_obj_t *controls_bar(lv_obj_t *bar);
+
+/* Updates lamp and keys; the choices lock while running. stopped: idle, the last session's
+ * values still shown */
 void controls_show_run(run_state run, bool stopped);
 
-/* Measured time and count beside the lamp */
+/* Measured time and count in the bar */
 void controls_show_progress(double elapsed, int samples, int missed);
 
-/* Readings, breakdown, carbon intensity and chart, built into column. Reports arrive via
+
+/* Pass their choices to settings_set; both are built from settings_get */
+void controls_keep(void);
+void display_keep(void);
+
+/* Start pressed: checks the fields and starts, unless a session runs */
+void controls_start(void);
+
+/* Session length chosen, in seconds: 0 until stopped, -1 until the followed process or
+ * command ends */
+double controls_length(void);
+
+/* The Electricity and Idle power cards of the Setup page, before display_create */
+void display_settings(lv_obj_t *page);
+
+/* Readings, breakdown, electricity and chart, built into the Readings page. Reports arrive via
  * display_report on the main thread. Values stay on screen after Stop until the next
  * Start. */
-void display_create(lv_obj_t *column);
+void display_create(lv_obj_t *page);
 
 void display_start(const target *t);
 void display_stop(void);
@@ -513,6 +718,17 @@ void platform_wake(void);
 /* Physical per logical pixel: 2.0 on Retina, usually 1.0 */
 float platform_scale(void);
 
+/* The layout's size, 1 by default: ui_px and ui_font follow it, and the smallest window too
+ * (within the screen). The screen must be built again after a change. */
+void platform_set_zoom(float zoom);
+float platform_zoom(void);
+
+/* The smallest window at this zoom fits the screen the window is on */
+bool platform_zoom_fits(float zoom);
+
+/* Ctrl or Cmd with +, - or 0 calls on_zoom with 1, -1 or 0, outside LVGL's own handling */
+void platform_on_zoom(void (*on_zoom)(int step));
+
 /* Folder of the program with a trailing separator, the app's Resources on macOS; "" if
  * unknown */
 const char *platform_program_folder(void);
@@ -528,5 +744,48 @@ void platform_set_hand_cursor(bool hand);
 /* Blocks idle sleep while on (macOS and Windows). Screen may still sleep, lid close still
  * sleeps. */
 void platform_keep_awake(bool on);
+
+/* Root, or an elevated administrator on Windows */
+bool platform_privileged(void);
+
+/* Ends platform_run as closing the window does */
+void platform_quit(void);
+
+/* The system's look is dark: macOS's appearance (the sudo user's under sudo), GNOME's colour
+ * scheme, Windows' app mode. False when unknown. */
+bool platform_dark_look(void);
+
+#ifndef PJ_WINDOWS
+/* An executable of that name in PATH */
+bool platform_in_path(const char *name);
+#endif
+
+/* The window's title bar in the look, where the system allows it (macOS, Windows) */
+void platform_dark_title(bool dark);
+
+/* -------------------------------------------------------------------------------------- */
+/* Power readings without a terminal                                         (elevate.c)  */
+/* -------------------------------------------------------------------------------------- */
+/* The system's own dialog asks for the administrator, never a password field of ours */
+
+typedef enum {
+    ELEVATE_NONE,     /* nothing to offer */
+    ELEVATE_ALLOW,    /* Linux: pkexec makes the RAPL counters readable until the next boot */
+    ELEVATE_RESTART   /* macOS, Windows: start again as the administrator, with an option */
+} elevate_way;
+
+/* What can be offered now for the power readings */
+elevate_way elevate_offer(void);
+
+/* Opens the dialog. on_done runs later on the main thread: granted, or why not ("" when
+ * cancelled). A restart saves the settings first, passes option (--start or --idle) and quits
+ * once the new program started, so on_done only hears of a refusal. False, with the reason in
+ * error, if no dialog could open. */
+bool elevate_start(const char *option, void (*on_done)(bool granted, const char *why), char *error, size_t n);
+
+/* Why no power can be read here, the command that makes it readable ("" for none) and the
+ * key's words for what the system offers (NULL for none), as the warning banner says them
+ * (ui_display.c) */
+void display_power_help(const char **hint, const char **command, const char **key);
 
 #endif /* JOULAR_ENERGY_METER_APP_H */

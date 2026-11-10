@@ -21,15 +21,24 @@
 #include <string.h>
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 
 #ifdef PJ_WINDOWS
 #include <windows.h>
+#include <dwmapi.h>
 #else
 #include <unistd.h>
 #endif
 
 #ifdef PJ_MACOS
+#include <errno.h>
+#include <fcntl.h>
+#include <grp.h>
+#include <sys/wait.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #endif
 
 #include "app.h"
@@ -44,6 +53,9 @@ static struct {
     SDL_Cursor *hand;
     int draw_w, draw_h;   /* the texture and the LVGL display, in pixels */
     float scale;          /* pixels per window point, read once when the window opens */
+    float zoom;           /* the layout's size, 1 by default */
+    int min_w, min_h;     /* smallest window at zoom 1, points */
+    void (*on_zoom)(int step);
     lv_display_t *disp;
     void *buf;
     lv_indev_t *mouse, *keyboard;
@@ -89,10 +101,10 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     lv_display_flush_ready(disp);
 }
 
-/* lv_dpx(n) == n * scale, so the theme's lengths follow the screen */
+/* lv_dpx(n) == n * scale * zoom, so the theme's lengths follow the screen and the zoom */
 static int32_t dpi(void)
 {
-    return (int32_t)(160.0f * sdl.scale + 0.5f);
+    return (int32_t)(160.0f * sdl.scale * sdl.zoom + 0.5f);
 }
 
 /* Layout is in pixels at the scale the window opened with. Keep that scale on resize and let
@@ -198,6 +210,17 @@ static uint32_t key_of(const SDL_Keysym *k)
 
 static void key_down(const SDL_Keysym *k)
 {
+    /* Zoom, as in a browser: Ctrl or Cmd with + (or =, unshifted), - and 0 */
+    if ((k->mod & (KMOD_CTRL | KMOD_GUI)) && sdl.on_zoom != NULL) {
+        int step = k->sym == SDLK_EQUALS || k->sym == SDLK_PLUS || k->sym == SDLK_KP_PLUS ? 1
+                   : k->sym == SDLK_MINUS || k->sym == SDLK_KP_MINUS                   ? -1
+                   : k->sym == SDLK_0 || k->sym == SDLK_KP_0                           ? 0
+                                                                                      : 2;
+        if (step != 2) {
+            sdl.on_zoom(step);
+            return;
+        }
+    }
     /* Chords give no SDL_TEXTINPUT, so paste is done here. First line only, a line break
      * would press Enter and a tab move focus. */
     if ((k->mod & (KMOD_CTRL | KMOD_GUI)) && k->sym == SDLK_v) {
@@ -343,6 +366,9 @@ bool platform_init(const char *title, int32_t w, int32_t h, int32_t min_w, int32
                                   SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if (!sdl.window) return sdl_error("window");
     SDL_SetWindowMinimumSize(sdl.window, LV_MIN(min_w, u.w), LV_MIN(min_h, u.h));
+    sdl.min_w = min_w;
+    sdl.min_h = min_h;
+    sdl.zoom = 1.0f;
 
     /* No vsync: LVGL paces frames and redraws only changes, and waiting for vblank every
      * frame would delay mouse and keyboard */
@@ -427,6 +453,44 @@ void platform_wake(void)
     SDL_PushEvent(&e);
 }
 
+void platform_set_zoom(float zoom)
+{
+    SDL_Rect u;
+    int w, h, ww, wh;
+
+    sdl.zoom = zoom;
+    lv_display_set_dpi(sdl.disp, dpi());
+    /* The smallest window grows with the layout, within the screen */
+    if (SDL_GetDisplayUsableBounds(LV_MAX(0, SDL_GetWindowDisplayIndex(sdl.window)), &u) != 0)
+        u = (SDL_Rect){ 0, 0, 1280, 720 };
+    w = LV_MIN((int)(sdl.min_w * zoom + 0.5f), u.w);
+    h = LV_MIN((int)(sdl.min_h * zoom + 0.5f), u.h);
+    SDL_SetWindowMinimumSize(sdl.window, w, h);
+    SDL_GetWindowSize(sdl.window, &ww, &wh);
+    if (ww < w || wh < h) {
+        SDL_SetWindowSize(sdl.window, LV_MAX(ww, w), LV_MAX(wh, h));
+        resize_display();
+    }
+}
+
+bool platform_zoom_fits(float zoom)
+{
+    SDL_Rect u;
+
+    if (SDL_GetDisplayUsableBounds(LV_MAX(0, SDL_GetWindowDisplayIndex(sdl.window)), &u) != 0) return zoom <= 1.0f;
+    return sdl.min_w * zoom <= u.w && sdl.min_h * zoom <= u.h;
+}
+
+float platform_zoom(void)
+{
+    return sdl.zoom;
+}
+
+void platform_on_zoom(void (*on_zoom)(int step))
+{
+    sdl.on_zoom = on_zoom;
+}
+
 float platform_scale(void)
 {
     return sdl.scale;
@@ -445,13 +509,55 @@ const char *platform_program_folder(void)
     return folder ? folder : "";
 }
 
+#ifdef PJ_MACOS
+/* As root, the pasteboard is root's, not the user's: under sudo, or after Restart with admin
+ * rights, pbcopy runs as the user to fill theirs. False when it isn't for us or didn't work. */
+static bool copy_as_user(const char *text)
+{
+    char *const env[] = { "LANG=en_US.UTF-8", NULL };
+    size_t left = strlen(text);
+    int ends[2], status = 0;
+    pid_t child;
+    uid_t uid;
+    gid_t gid;
+
+    if (!sudo_user(&uid, &gid) || pipe(ends) != 0) return false;
+    /* A pbcopy that didn't start must not kill us with SIGPIPE */
+    fcntl(ends[1], F_SETNOSIGPIPE, 1);
+    if ((child = fork()) == 0) {
+        /* Only async-signal-safe calls between fork and exec */
+        dup2(ends[0], STDIN_FILENO);
+        close(ends[0]);
+        close(ends[1]);
+        if (setgroups(0, NULL) == 0 && setgid(gid) == 0 && setuid(uid) == 0)
+            execle("/usr/bin/pbcopy", "pbcopy", (char *)NULL, env);
+        _exit(127);
+    }
+    close(ends[0]);
+    while (child > 0 && left > 0) {
+        ssize_t wrote = write(ends[1], text, left);
+
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
+        text += wrote;
+        left -= (size_t)wrote;
+    }
+    close(ends[1]);
+    while (child > 0 && waitpid(child, &status, 0) < 0 && errno == EINTR)
+        ;
+    return child > 0 && left == 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+#endif
+
 void platform_set_clipboard(const char *text)
 {
+#ifdef PJ_MACOS
+    if (copy_as_user(text)) return;
+#endif
     if (SDL_SetClipboardText(text) != 0) sdl_error("clipboard");
 }
 
-/* Started from here, the browser would run as root or Administrator too */
-static bool privileged(void)
+bool platform_privileged(void)
 {
 #ifdef PJ_WINDOWS
     HANDLE token;
@@ -468,9 +574,103 @@ static bool privileged(void)
 #endif
 }
 
+/* Started from here, the browser would run as root or Administrator too */
 bool platform_open_url(const char *url)
 {
-    return !privileged() && SDL_OpenURL(url) == 0;
+    return !platform_privileged() && SDL_OpenURL(url) == 0;
+}
+
+void platform_quit(void)
+{
+    SDL_Event quit = { .type = SDL_QUIT };
+
+    SDL_PushEvent(&quit);
+}
+
+#if defined(PJ_MACOS)
+/* As root under sudo, the user's appearance: root's would always be light */
+bool platform_dark_look(void)
+{
+    const char *user = geteuid() == 0 ? getenv("SUDO_USER") : NULL;
+    CFStringRef name = user != NULL ? CFStringCreateWithCString(NULL, user, kCFStringEncodingUTF8) : NULL;
+    CFPropertyListRef style = name != NULL ? CFPreferencesCopyValue(CFSTR("AppleInterfaceStyle"), kCFPreferencesAnyApplication,
+                                                                    name, kCFPreferencesAnyHost)
+                                           : CFPreferencesCopyAppValue(CFSTR("AppleInterfaceStyle"), kCFPreferencesAnyApplication);
+    bool dark = style != NULL && CFGetTypeID(style) == CFStringGetTypeID()
+                && CFStringCompare((CFStringRef)style, CFSTR("Dark"), 0) == kCFCompareEqualTo;
+
+    if (style) CFRelease(style);
+    if (name) CFRelease(name);
+    return dark;
+}
+#elif defined(PJ_WINDOWS)
+bool platform_dark_look(void)
+{
+    DWORD light = 1, size = sizeof light;
+
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &light, &size) != ERROR_SUCCESS)
+        return false;
+    return light == 0;
+}
+#else
+static bool gnome_setting_has(const char *key, const char *word)
+{
+    char command[128], line[128] = "";
+    FILE *out;
+
+    snprintf(command, sizeof command, "gsettings get org.gnome.desktop.interface %s 2>/dev/null", key);
+    if ((out = popen(command, "r")) == NULL) return false;
+    if (fgets(line, sizeof line, out) == NULL) line[0] = '\0';
+    pclose(out);
+    return strstr(line, word) != NULL;
+}
+
+/* GNOME's colour scheme, or its theme's name (all there is before GNOME 42); light elsewhere */
+bool platform_dark_look(void)
+{
+    /* Root would read root's settings, and could leave root-owned dconf files in the user's home.
+     * No shell started for nothing where GNOME's settings aren't. */
+    return geteuid() != 0 && platform_in_path("gsettings") && (gnome_setting_has("color-scheme", "prefer-dark") || gnome_setting_has("gtk-theme", "-dark"));
+}
+#endif
+
+#ifndef PJ_WINDOWS
+bool platform_in_path(const char *name)
+{
+    const char *path = getenv("PATH");
+    char folders[4096], file[4096];
+
+    if (path == NULL || snprintf(folders, sizeof folders, "%s", path) >= (int)sizeof folders)
+        snprintf(folders, sizeof folders, "/usr/bin:/bin");
+    for (char *f = strtok(folders, ":"); f != NULL; f = strtok(NULL, ":"))
+        if (snprintf(file, sizeof file, "%s/%s", f, name) < (int)sizeof file && access(file, X_OK) == 0) return true;
+    return false;
+}
+#endif
+
+void platform_dark_title(bool dark)
+{
+    SDL_SysWMinfo info;
+
+    SDL_VERSION(&info.version);
+    if (sdl.window == NULL || !SDL_GetWindowWMInfo(sdl.window, &info)) return;
+#if defined(PJ_WINDOWS)
+    /* 20 is DWMWA_USE_IMMERSIVE_DARK_MODE, which older SDKs don't name. Windows 10 before
+     * 20H1 ignores it. */
+    BOOL on = dark;
+    DwmSetWindowAttribute(info.info.win.window, 20, &on, sizeof on);
+#elif defined(PJ_MACOS)
+    /* [window setAppearance:[NSAppearance appearanceNamed:name]], from C through the
+     * Objective-C runtime; a CFString is an NSString */
+    id name = (id)(dark ? CFSTR("NSAppearanceNameDarkAqua") : CFSTR("NSAppearanceNameAqua"));
+    /* objc_msgSend is called as the method's own type, from a plain pointer to it */
+    void (*send)(void) = (void (*)(void))objc_msgSend;
+    id look = ((id (*)(id, SEL, id))send)((id)objc_getClass("NSAppearance"), sel_registerName("appearanceNamed:"), name);
+    ((void (*)(id, SEL, id))send)((id)info.info.cocoa.window, sel_registerName("setAppearance:"), look);
+#else
+    (void)dark;
+#endif
 }
 
 void platform_set_hand_cursor(bool hand)

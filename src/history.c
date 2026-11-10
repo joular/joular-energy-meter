@@ -62,6 +62,8 @@ double history_value(const history_point *p, series s)
         return p->data.gpu_power;
     case SERIES_TARGET:
         return p->data.target_power;
+    case SERIES_PLUG:
+        return p->data.plug_power;
     default:
         return p->data.total_power;
     }

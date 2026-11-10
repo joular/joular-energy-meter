@@ -9,7 +9,8 @@
  * Author : Adel Noureddine
  */
 
-/* --version and --help, otherwise open the window */
+/* --version and --help, otherwise open the window (and start measuring with --start, or open the
+ * idle power's window with --idle) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include <windows.h>
 #else
 #include <limits.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -69,12 +71,25 @@ static void leave_root_folder(void)
 }
 #endif
 
+/* macOS's admin dialog starts programs with TERM, INT and QUIT blocked: quitting by a signal
+ * would never work */
+static void unblock_signals(void)
+{
+#ifndef PJ_WINDOWS
+    sigset_t none;
+
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
+#endif
+}
+
 int main(int argc, char *argv[])
 {
     const char *option = argc > 1 ? argv[1] : "";
     int status = 0;
 
     if (argc > 0) program_path = argv[0];
+    unblock_signals();
     adainit();
     leave_root_folder();
 
@@ -86,9 +101,11 @@ int main(int argc, char *argv[])
         use_parent_console();
         printf(JOULARENERGYMETER_NAME " %s monitors the power consumption of multiple platforms, processes and applications\n", JOULARENERGYMETER_VERSION);
         puts("What to monitor, and how often (every 1 to 10 s), is chosen in the GUI window. The only options are:");
+        puts("  --start         start measuring at once, with the choices kept from the last time");
+        puts("  --idle          open the window that measures the idle power");
         puts("  -v, --version   print the versions and stop");
         puts("  -h, --help      print this and stop");
-    } else if (option[0] == '-') {
+    } else if (option[0] == '-' && strcmp(option, "--start") != 0 && strcmp(option, "--idle") != 0) {
         /* A file dropped on the exe in Explorer isn't an option and still opens the window */
         use_parent_console();
         fprintf(stderr, JOULARENERGYMETER_NAME ": unknown option %s (try --help)\n", option);
@@ -100,10 +117,16 @@ int main(int argc, char *argv[])
         fputs(JOULARENERGYMETER_NAME ": measuring could not start\n", stderr);
         status = 1;
     } else {
+        settings_load();
+        ui_zoom_init();
+        platform_on_zoom(ui_zoom);
         theme_init(lv_display_get_default());
         carbon_load();
         ui_build();
+        if (strcmp(option, "--start") == 0) controls_start();
+        if (strcmp(option, "--idle") == 0) display_measure_idle();
         status = platform_run(sampler_deliver);
+        settings_save();
 
         /* Window may close mid-session: release the hardware (and powermetrics) before
          * adafinal */

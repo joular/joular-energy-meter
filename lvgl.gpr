@@ -30,9 +30,10 @@ library project LVGL is
         "lvgl/src/libs/vg_lite_driver/lv_vg_lite_hal");
 
     package Compiler is
-        --  Log messages give source paths relative to this folder, not the build dir
+        --  Log messages give source paths relative to this folder, not the build dir.
+        --  One section per function and variable, so the linker can drop the unused ones.
         for Switches ("C") use
-            ("-O2", "-DLV_CONF_INCLUDE_SIMPLE", "-I" & LVGL'Project_Dir,
+            ("-O2", "-ffunction-sections", "-fdata-sections", "-DLV_CONF_INCLUDE_SIMPLE", "-I" & LVGL'Project_Dir,
              "-fmacro-prefix-map=" & LVGL'Project_Dir & "=");
     end Compiler;
 

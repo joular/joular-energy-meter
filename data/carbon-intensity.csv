@@ -11,10 +11,10 @@ ARM,Armenia,2025,244.0
 ABW,Aruba,2024,549.0
 AUS,Australia,2025,518.0
 AUT,Austria,2025,116.6
-AZE,Azerbaijan,2025,642.0
+AZE,Azerbaijan,2025,639.3
 BHS,Bahamas,2024,652.4
 BHR,Bahrain,2024,902.5
-BGD,Bangladesh,2025,696.3
+BGD,Bangladesh,2025,696.1
 BRB,Barbados,2024,600.9
 BLR,Belarus,2025,315.2
 BEL,Belgium,2025,151.3
@@ -22,7 +22,7 @@ BLZ,Belize,2024,170.2
 BEN,Benin,2024,579.2
 BTN,Bhutan,2024,23.7
 BOL,Bolivia,2025,481.3
-BIH,Bosnia Herzegovina,2025,572.9
+BIH,Bosnia Herzegovina,2025,572.8
 BWA,Botswana,2024,852.5
 BRA,Brazil,2025,109.2
 BRN,Brunei Darussalam,2024,893.0
@@ -38,33 +38,33 @@ CAF,Central African Republic,2023,21.4
 TCD,Chad,2024,629.7
 CHL,Chile,2025,290.6
 CHN,China,2025,528.3
-COL,Colombia,2025,190.1
+COL,Colombia,2025,186.0
 COM,Comoros,2023,657.1
 COG,Congo,2024,715.6
 COD,Congo (DRC),2024,27.6
 COK,Cook Islands (the),2024,350.0
-CRI,Costa Rica,2024,25.8
+CRI,Costa Rica,2025,24.6
 CIV,Cote d'Ivoire,2024,405.6
-HRV,Croatia,2025,158.1
+HRV,Croatia,2025,158.5
 CUB,Cuba,2024,642.9
 CYP,Cyprus,2025,505.2
-CZE,Czechia,2025,401.4
-DNK,Denmark,2025,99.9
+CZE,Czechia,2025,400.8
+DNK,Denmark,2025,119.6
 DJI,Djibouti,2024,430.0
 DMA,Dominica,2023,573.3
 DOM,Dominican Republic,2025,538.0
-ECU,Ecuador,2025,158.6
+ECU,Ecuador,2025,158.5
 EGY,Egypt,2025,557.2
 SLV,El Salvador,2025,98.0
 GNQ,Equatorial Guinea,2024,643.0
 ERI,Eritrea,2024,591.1
-EST,Estonia,2025,318.6
+EST,Estonia,2025,318.8
 SWZ,Eswatini,2024,119.7
 ETH,Ethiopia,2025,23.4
 FLK,Falkland Islands (Malvinas),2023,700.0
 FRO,Faroe Islands,2023,361.2
 FJI,Fiji,2024,275.7
-FIN,Finland,2025,57.2
+FIN,Finland,2025,58.8
 FRA,France,2025,41.2
 GUF,French Guiana,2023,257.1
 PYF,French Polynesia,2024,440.3
@@ -73,7 +73,7 @@ GMB,Gambia,2024,658.8
 GEO,Georgia,2025,146.9
 DEU,Germany,2025,334.1
 GHA,Ghana,2024,468.8
-GRC,Greece,2025,324.8
+GRC,Greece,2025,324.6
 GRL,Greenland,2024,138.3
 GRD,Grenada,2024,658.3
 GLP,Guadeloupe,2023,493.4
@@ -85,15 +85,15 @@ GUY,Guyana,2024,642.0
 HTI,Haiti,2024,539.5
 HND,Honduras,2024,322.0
 HKG,Hong Kong (SAR of China),2024,675.6
-HUN,Hungary,2025,162.6
+HUN,Hungary,2025,162.0
 ISL,Iceland,2025,27.8
-IND,India,2025,670.9
+IND,India,2025,671.0
 IDN,Indonesia,2025,705.3
 IRN,Iran,2025,656.0
 IRQ,Iraq,2024,683.1
-IRL,Ireland,2025,263.3
+IRL,Ireland,2025,270.7
 ISR,Israel,2025,492.9
-ITA,Italy,2025,284.4
+ITA,Italy,2025,284.9
 JAM,Jamaica,2024,562.4
 JPN,Japan,2025,473.7
 JOR,Jordan,2024,529.7
@@ -101,8 +101,8 @@ KAZ,Kazakhstan,2025,812.8
 KEN,Kenya,2025,95.9
 KIR,Kiribati,2024,500.0
 XKX,Kosovo,2025,905.5
-KWT,Kuwait,2025,634.7
-KGZ,Kyrgyzstan,2025,72.6
+KWT,Kuwait,2025,634.6
+KGZ,Kyrgyzstan,2025,79.9
 LAO,Lao PDR,2024,232.1
 LVA,Latvia,2025,134.9
 LBN,Lebanon,2024,388.2
@@ -123,7 +123,7 @@ MRT,Mauritania,2024,515.0
 MUS,Mauritius,2024,642.2
 MEX,Mexico,2025,481.4
 MDA,Moldova,2025,514.4
-MNG,Mongolia,2025,821.8
+MNG,Mongolia,2025,820.0
 MNE,Montenegro,2025,274.9
 MSR,Montserrat,2024,700.0
 MAR,Morocco,2025,603.0
@@ -134,26 +134,26 @@ NRU,Nauru,2024,540.0
 NPL,Nepal,2024,24.0
 NLD,Netherlands,2025,253.7
 NCL,New Caledonia,2024,564.1
-NZL,New Zealand,2025,92.1
+NZL,New Zealand,2025,96.5
 NIC,Nicaragua,2024,300.4
 NER,Niger,2024,670.5
-NGA,Nigeria,2025,451.8
+NGA,Nigeria,2025,451.7
 PRK,North Korea,2024,340.6
 MKD,North Macedonia,2025,426.1
 NOR,Norway,2025,28.1
-OMN,Oman,2025,544.4
+OMN,Oman,2025,540.7
 PAK,Pakistan,2025,308.1
 PSE,Palestine (State of),2024,417.2
 PAN,Panama,2024,220.3
 PNG,Papua New Guinea,2024,516.1
 PRY,Paraguay,2025,24.8
-PER,Peru,2025,238.1
+PER,Peru,2025,238.0
 POL,Poland,2025,590.8
 PRT,Portugal,2025,127.8
 PRI,Puerto Rico,2025,656.1
-QAT,Qatar,2025,581.9
+QAT,Qatar,2024,581.7
 REU,Reunion,2023,398.7
-ROU,Romania,2025,259.2
+ROU,Romania,2025,258.4
 RUS,Russia,2025,446.9
 RWA,Rwanda,2024,361.9
 KNA,Saint Kitts and Nevis,2024,604.3
@@ -164,23 +164,23 @@ WSM,Samoa,2024,400.0
 STP,Sao Tome and Principe,2023,588.9
 SAU,Saudi Arabia,2025,679.8
 SEN,Senegal,2024,540.1
-SRB,Serbia,2025,699.1
+SRB,Serbia,2025,695.7
 SYC,Seychelles,2024,560.3
 SLE,Sierra Leone,2024,57.1
 SGP,Singapore,2025,497.0
 SVK,Slovakia,2025,95.3
-SVN,Slovenia,2025,188.5
+SVN,Slovenia,2025,182.9
 SLB,Solomon Islands,2024,600.0
 SOM,Somalia,2024,530.2
-ZAF,South Africa,2025,699.1
+ZAF,South Africa,2025,699.0
 KOR,South Korea,2025,417.7
 SSD,South Sudan,2024,646.4
-ESP,Spain,2025,153.5
-LKA,Sri Lanka,2025,379.3
+ESP,Spain,2025,154.1
+LKA,Sri Lanka,2025,352.2
 SDN,Sudan,2024,154.3
 SUR,Suriname,2024,323.0
 SWE,Sweden,2025,35.4
-CHE,Switzerland,2025,39.1
+CHE,Switzerland,2025,39.3
 SYR,Syria,2024,706.2
 TWN,Taiwan (China),2025,633.6
 TJK,Tajikistan,2025,72.6
@@ -190,16 +190,16 @@ PHL,The Philippines,2025,595.4
 TGO,Togo,2024,421.1
 TON,Tonga,2024,571.4
 TTO,Trinidad and Tobago,2024,681.3
-TUN,Tunisia,2025,561.1
+TUN,Tunisia,2025,561.5
 TUR,Türkiye,2025,475.8
 TKM,Turkmenistan,2024,1306.2
 TCA,Turks and Caicos Islands,2024,637.0
 UGA,Uganda,2024,58.5
 UKR,Ukraine,2022,250.5
 ARE,United Arab Emirates,2025,469.7
-GBR,United Kingdom,2025,218.2
+GBR,United Kingdom,2025,218.0
 USA,United States,2025,384.4
-URY,Uruguay,2025,79.8
+URY,Uruguay,2025,80.5
 UZB,Uzbekistan,2025,1000.0
 VUT,Vanuatu,2023,500.0
 VEN,Venezuela,2024,85.9

@@ -6,27 +6,31 @@
 
 ![Joular Energy Meter Logo](joular-energymeter.png)
 
-Joular Energy Meter is a desktop application that monitors, in real time, the power and energy consumption of your computer's hardware (CPU and GPU) and of the process or application you choose, on Windows, Linux, macOS and FreeBSD.
+Joular Energy Meter is a desktop application that monitors, in real time, the power and energy consumption of your computer (CPU and GPU) and of a process or application, on Windows, Linux, macOS and FreeBSD.
+It also estimates the carbon emissions and the cost of energy.
 
-It also estimates the carbon emissions of that energy, in grams of CO2 equivalent, now and since the start. They are counted with the carbon intensity of your country's electricity (from [Ember's data](https://ember-energy.org/data/yearly-electricity-data/)), of a single energy source such as solar, or with your own value.
+Detailed documentation (including user and reference guides) is available at: [https://joular.github.io/joular-energy-meter/](https://joular.github.io/joular-energy-meter/).
 
-<img src="joularenergymeter.png" width="50%">
-
-Similar to our powerful command-line tool, [PowerJoular](https://github.com/joular/powerjoular), Joular Energy Meter does the energy and CPU usage measuring through two Ada libraries we developed:
-- [Joular Core](https://github.com/joular/joularcore): for CPU and GPU energy and power consumption.
-- [CPU Load](https://github.com/joular/cpuload): for CPU usage for the whole system, a specific PID, and a specific application (all its PIDs).
+<table>
+  <tr>
+    <td><a href="screenshots/energymeter-readings-light.png"><img src="screenshots/energymeter-readings-light.png" alt="Readings" width="400"></a></td>
+    <td><a href="screenshots/energymeter-readings-dark.png"><img src="screenshots/energymeter-readings-dark.png" alt="Readings, dark look" width="400"></a></td>
+  </tr>
+  <tr>
+    <td><a href="screenshots/energymeter-setup-light.png"><img src="screenshots/energymeter-setup-light.png" alt="Setup" width="400"></a></td>
+    <td><a href="screenshots/energymeter-idle-light.png"><img src="screenshots/energymeter-idle-light.png" alt="Measuring the idle power" width="400"></a></td>
+  </tr>
+</table>
 
 ## :rocket: Features
 
-- Monitor CPU, GPU and total power, and the CPU load of the machine and of the process you follow
-- The energy used since the start, the average power, its spread, and a year at that average
-- Carbon emissions since the start, for the electricity of a country, an energy source or your own value
-- A chart of the last 120 measurements (two minutes at 1 s) of one source at a time, with its highest and lowest
-- CSV files in PowerJoular's format, written while measuring
-- Runs on Linux, Windows, macOS and FreeBSD, and has the same UI and look&feel on all of them
-
-A process that has ended or can't be read shows a dash, not 0 %, and is written as `-1` in the
-CSV files, as PowerJoular does.
+- Monitor the power and energy of the CPU, the GPU and the entire machine
+- Monitor a process, an application (all its processes), or a command started from the application
+- Estimate carbon emissions with the carbon intensity of your country's electricity (from [Ember](https://ember-energy.org)), of an energy source, or your own value
+- Measure the idle power of the machine, to then calculate what a program consumes without it
+- Read a power meter at the plug, through the CSV file its program writes
+- Save the power data to CSV files, in the same format as [PowerJoular](https://github.com/joular/powerjoular)
+- The same application and GUI on Linux, Windows, macOS and FreeBSD
 
 ## :satellite: Supported platforms
 
@@ -37,142 +41,49 @@ CSV files, as PowerJoular does.
 | macOS | Apple Silicon, Intel | Apple Silicon |
 | FreeBSD | Intel, AMD | Nvidia |
 
-How each hardware component is read is detailed in [Joular Core](https://github.com/joular/joularcore#satellite-supported-platforms).
+Joular Energy Meter does the measuring through two Ada libraries we developed:
+- [Joular Core](https://github.com/joular/joularcore): for CPU and GPU energy and power consumption.
+- [CPU Load](https://github.com/joular/cpuload): for CPU usage of the entire system, of a process, and of an application (all its processes).
 
-## :floppy_disk: Building and compilation
+## :package: Installation
 
-You need SDL2 (2.0.18 or newer) and LVGL 9.6 inside this folder, at the commit of its `release/v9.6` branch that the CI builds against (`.github/workflows/build.yml`):
+Packages are available for each system:
+- Linux (x86_64 and aarch64): `.deb`, `.rpm`, Arch Linux package and AppImage. They need glibc 2.35 or newer (Debian 12, Ubuntu 22.04, Fedora 36 and later).
+- macOS 15 or newer (Apple Silicon and Intel): `.dmg`.
+- Windows: `.msi`, or a `.zip`.
+- FreeBSD: `.pkg`, after `sudo pkg install sdl2`.
+
+The packages are not signed: the first time, macOS asks to confirm in *System Settings > Privacy & Security*, and Windows SmartScreen in *More info > Run anyway*.
+
+### Required privileges
+
+The CPU load is always read, but the CPU power needs additional rights on most systems.
+When they are missing, the application says what to do, and can ask the system for them.
+
+- **Linux**: the RAPL files are readable by root only. Run `sudo chmod -R a+r /sys/class/powercap/intel-rapl` after each boot, or start the application with `sudo`.
+- **Windows**: nothing to do on Windows 11. On older versions, install the [PawnIO](https://pawnio.eu) driver and run as administrator, or [Hubblo's RAPL driver](https://github.com/hubblo-org/windows-rapl-driver).
+- **macOS**: `powermetrics` needs root. Start the application with `sudo` from Terminal, or let it restart itself with admin rights.
+- **FreeBSD**: load the cpuctl driver (`sudo kldload cpuctl`) and start the application with `sudo` under X11.
+- GPUs and Raspberry Pi need nothing.
+
+## :floppy_disk: Compilation
+
+You need SDL2 (2.0.18 or newer), and LVGL 9.6 in the `lvgl` folder:
 
 ```bash
 git clone https://github.com/joular/joular-energy-meter
-cd joular-energy-meter && git init lvgl && git -C lvgl fetch --depth 1 https://github.com/lvgl/lvgl.git 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579 && git -C lvgl checkout FETCH_HEAD
+cd joular-energy-meter
+git init lvgl && git -C lvgl fetch --depth 1 https://github.com/lvgl/lvgl.git 8df3de9c4c5e45ad7b0fef5adc2fa6eaa5d21579 && git -C lvgl checkout FETCH_HEAD
 ```
 
-### With Alire
-
-[Alire](https://alire.ada.dev) brings GNAT, gprbuild, Joular Core and CPU Load:
+Then, with [Alire](https://alire.ada.dev), which brings GNAT, Joular Core and CPU Load:
 
 ```bash
 alr build
 ```
 
-On macOS, `alr build -- -XDev=True` for a build run from this folder: Homebrew's SDL2 loads SDL3 by name, and the switch tells dyld where to find it. The packaged app (below) is built without it, so it looks for nothing outside the app when run with `sudo`.
-
-Alire checks that SDL2 is installed and offers to install it. To install it yourself:
-
-```bash
-brew install sdl2                   # macOS
-sudo apt install libsdl2-dev        # Debian, Ubuntu
-sudo dnf install SDL2-devel         # Fedora
-pacman -S mingw-w64-x86_64-SDL2     # Windows, in Alire's msys2 shell
-sudo pkg install sdl2               # FreeBSD
-```
-
-If SDL2 is in another place: `alr build -- -XSDL2_CFLAGS="-I<folder>" -XSDL2_LIBS="-L<folder> -lSDL2"`.
-
-### Without Alire
-
-You need GNAT and gprbuild, SDL2 (as above), and the two libraries next to this folder:
-
-```bash
-cd ..
-git clone --depth 1 --branch 0.0.6 https://github.com/joular/cpuload.git
-git clone --depth 1 --branch 0.0.6 https://github.com/joular/joularcore.git
-cd joular-energy-meter
-gprbuild -P joularenergymeter.gpr -aP../joularcore -aP../cpuload -p
-```
-
-The OS is detected from the compiler, which you can force with `-XPJ_OS=linux`, `windows`, `macos` or
-`freebsd`. gprbuild doesn't look where Homebrew puts SDL2, so on macOS add
-`-XSDL2_CFLAGS="-I$(brew --prefix)/include" -XSDL2_LIBS="-L$(brew --prefix)/lib -lSDL2"`.
 The program is `bin/joularenergymeter`.
-
-On FreeBSD, use GNAT 15 or newer (`sudo pkg install gprbuild gnat15`, then put
-`/usr/local/gnat15/bin` first in `PATH`). GNAT 12 can't compile Joular Core's FreeBSD code.
-Alire has no FreeBSD SDL2 package, so this is the only way to build it on FreeBSD.
-
-### :package: Packages and installers
-
-`packaging/` has one script per system. Each builds the program, checks it and makes the packages in `dist/`. The CI runs the same scripts and keeps what they make as artifacts.
-Every package has the program, the countries' carbon intensities, this README and the licences (GPL, LVGL's MIT, Barlow's OFL).
-The top of each script lists what it needs.
-
-| System | Run | Makes |
-| --- | --- | --- |
-| Linux | `packaging/linux.sh` | `.tar.gz`, `.deb`, `.rpm`, Arch Linux `.pkg.tar.zst`, `.AppImage` |
-| macOS | `packaging/macos.sh` | `.zip` with *Joular Energy Meter.app*, `.dmg` |
-| Windows | `powershell -ExecutionPolicy Bypass -File packaging\windows.ps1` | `.zip`, `.msi` |
-| FreeBSD | `packaging/freebsd.sh` | `.tar.gz`, `.pkg` |
-
-Users need no compiler, Alire or MSYS2 to run Joular Energy Meter:
-
-- **Linux** (x86_64 and aarch64): `sudo apt install ./joularenergymeter_<version>-1_amd64.deb`,
-  `sudo dnf install ./joularenergymeter-<version>-1.x86_64.rpm` or
-  `sudo pacman -U joularenergymeter-<version>-1-x86_64.pkg.tar.zst`, which also install SDL2. The
-  AppImage has SDL2 inside and runs anywhere (`chmod +x`, then start it). The tar.gz needs the
-  SDL2 package (`libsdl2-2.0-0` on Debian and Ubuntu, `SDL2` on Fedora). All need glibc 2.35 or
-  newer (Debian 12, Ubuntu 22.04, Fedora 36 and later), as built by the CI on Ubuntu 22.04.
-- **macOS**: open the `.dmg` and drag the app to Applications. One binary for Apple silicon and
-  Intel, with SDL's `SDL2.framework` inside, macOS 15 or newer (GNAT's Ada runtime is built for
-  15). Signed ad hoc only, so the first time macOS blocks it: open *System Settings > Privacy &
-  Security* and click *Open Anyway*. Started from Finder, it writes its CSV files to the home
-  folder. For power readings, start it from Terminal:
-  `sudo "/Applications/Joular Energy Meter.app/Contents/MacOS/joularenergymeter"`.
-- **Windows**: run the `.msi` (Program Files, Start menu, removed from Settings > Apps), or unzip
-  the `.zip` and run `joularenergymeter.exe`. Both ship SDL's own `SDL2.dll`. Unsigned, so
-  SmartScreen asks once (More info, Run anyway).
-- **FreeBSD**: `sudo pkg install sdl2`, then `sudo pkg add joularenergymeter-<version>-freebsd14-amd64.pkg` (pkg add looks for dependencies only beside the file), or the tar.gz.
-
-On macOS the script builds the app's binary in `bin/app`, so `bin/joularenergymeter` stays the
-one that runs from the checkout. A binary built by hand needs SDL2 from where it was built
-(Homebrew, MSYS2), so ship the packages instead.
-
-## Reading the power
-
-CPU load always works. Power reading may need some access depending on each OS, and when it's missing, a notice says what to do, with a button to copy the command.
-
-- **Linux**: RAPL files are root-only (CVE-2020-8694). Either run `sudo chmod -R a+r /sys/class/powercap/intel-rapl` after each boot, which lets every user on the machine read them, or start the app with `sudo` under X11 (not Wayland).
-- **Windows**: nothing to do on Windows 11. On older Windows versions, install the [PawnIO driver](https://pawnio.eu) and run as Administrator, or [Hubblo's RAPL driver](https://github.com/hubblo-org/windows-rapl-driver).
-- **macOS**: `powermetrics` needs root: `sudo ./bin/joularenergymeter`.
-- **FreeBSD**: load the cpuctl driver (`sudo kldload cpuctl`, or `cpuctl_load="YES"` in `/boot/loader.conf`) and run with `sudo` under X11. Intel and AMD only. The `kmem` group also works, but it can read all memory through `/dev/mem`.
-- Nvidia GPUs, AMD GPUs on Linux and Windows, and Raspberry Pi models need nothing.
-
-## :bulb: Usage
-
-The top bar has options to: *Measure* the whole machine, a process (by ID) or an
-application (by name), *every* interval, and optionally *Record to* a CSV file, typed or chosen with **Browse**. Press **Start**
-(or Enter).
-While measuring, the top bar says what is measured and where it is recorded, with the time measured and the number of measurements beside Pause. Only the interval can still be changed, which restarts the chart.
-**Pause** stops the clock and the energy count until you resume. Problems, and a field left empty, show in a banner under the top bar.
-
-- **Readings**: the followed program and the whole machine side by side, each with its power now, and its energy and carbon emissions since the start. The program's share of the machine's power is next to its name. After Stop, the power becomes the session's average.
-- **Machine breakdown**: the processor and the graphics card, with their share of the machine.
-- **Carbon intensity**: the electricity the emissions are counted for (below).
-- **Chart**: the last 120 measurements of the program, the machine, the processor or the graphics card, chosen above it, with the average since the start and the highest and lowest points shown. Under it: the CPU load (for the program, its share of the CPU), the spread of the power since the start (standard deviation), and a year at the average.
-- **Status bar**: the last message. Errors stay highlighted until the next one.
-- **File browser** (Browse): a click selects, a double click opens a folder or picks a file, a click on a file takes its name; type a path in the path field, then Enter. From the keyboard: arrows, Enter, Backspace goes up, letters jump to a name, Esc cancels.
-
-The followed program's *Power* is its share of the processor's power only: the processor's power times the program's CPU load over the machine's, as PowerJoular counts it; the graphics card isn't attributed. *Share of CPU* is the fraction of the machine's processing capacity it used (all of one core out of eight is 12.5 %), not of the processor's power. Its share of the machine divides its power by the machine's CPU + GPU power.
-
-When you follow a process or application, a *second* CSV file is written next to the first (`power-<pid>.csv` or `power-<name>.csv` for `power.csv`), as PowerJoular does. Applications are matched by program name (`firefox`, not *Firefox.app*), and on macOS, all programs inside the app bundle count.
-
-The interval goes from 1 to 10 s. Each cycle is divided by the time it really took, so changing it while measuring is fine. A cycle during which the machine slept is dropped. CSV timestamps are whole Unix seconds, as in PowerJoular.
-
-From a terminal, `-h` (`--help`) and `-v` (`--version`) print and stop; everything else is chosen in the window.
-
-As root, the application only writes to plain files (no links), and files it creates under `sudo` belong to you. While measuring, macOS and Windows don't go to sleep on idle. On Linux, use `systemd-inhibit --what=sleep` for long runs.
-
-## Carbon emissions
-
-The energy since the start is turned into grams of CO2 equivalent, for the machine and the followed program, with the electricity chosen under *Carbon intensity*:
-
-- **Country**: the country's yearly average carbon intensity, from [Ember's yearly electricity data](https://ember-energy.org/data/yearly-electricity-data/), over the life cycle of the power plants. The country of the time zone is chosen at start (on Windows, the one of the region setting), or the world's average.
-- **Energy source**: electricity from a single source, such as your own solar panels, with the IPCC's life-cycle medians (AR5, the figures Ember uses).
-- **Own value**: your figure in g CO2e per kWh, such as your supplier's.
-
-Changing it works out the emissions again from the last measurement, including after Stop. They are not written to the CSV files, which keep PowerJoular's columns.
-
-The countries' values are read from `carbon-intensity.csv`, beside the program (in the app's *Contents/Resources* on macOS) or in `../share/joularenergymeter/` from it, as the packages install it. Without it, the same values built into the program are used. To update them, run `python3 data/update.py`, which takes Ember's latest data and rewrites `data/carbon-intensity.csv` and its built-in copy `src/carbon_data.c`. Ember adds a new year once a year. An edited file works without a rebuild: one row per country, `ISO 3 code,Area,Year,grams per kWh`.
+Building without Alire (needed on FreeBSD), and making the packages, are described in the [documentation](https://joular.github.io/joular-energy-meter/ref/compilation.html).
 
 ## :newspaper: License
 
@@ -187,7 +98,9 @@ Third-party work and dependencies:
 - LVGL, MIT licence, Copyright (c) 2025 LVGL Kft (`lvgl/LICENCE.txt`).
 - Barlow font, SIL Open Font License 1.1, Copyright 2017 The Barlow Project Authors (`src/fonts/OFL.txt`).
 - Montserrat font (built into LVGL), SIL Open Font License 1.1, Copyright 2024 The Montserrat.Git Project Authors.
-- Carbon intensity of electricity by country: Ember, [Yearly Electricity Data](https://ember-energy.org/data/yearly-electricity-data/), CC BY 4.0, latest year of each country (`data/carbon-intensity.csv`).
+- Carbon intensity of electricity by country: Ember, [Yearly Electricity Data](https://ember-energy.org/data/yearly-electricity-data/) and [Monthly Electricity Data](https://ember-energy.org/data/monthly-electricity-data/), CC BY 4.0 (`data/carbon-intensity.csv`, `data/carbon-intensity-monthly.csv`).
+- Everyday equivalents: US EPA, [Greenhouse Gas Equivalencies Calculator, Calculations and References](https://www.epa.gov/energy/greenhouse-gas-equivalencies-calculator-calculations-and-references).
+- Lucide icons, ISC licence, Copyright Lucide Contributors 2022, and Cole Bemis 2013-2022 for the parts from Feather (`src/fonts/LICENCE-Lucide.txt`).
 - Font Awesome Free 5 symbols (built into LVGL), SIL Open Font License 1.1, Fonticons, Inc.
 
 Author : Prof. Adel Noureddine

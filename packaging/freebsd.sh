@@ -7,8 +7,8 @@
 #   sudo pkg install gprbuild gnat15 sdl2
 #   export PATH=/usr/local/gnat15/bin:$PATH
 # and CPU Load and Joular Core checked out beside this folder, or in LIBS:
-#   git clone --depth 1 --branch 0.0.6 https://github.com/joular/cpuload.git
-#   git clone --depth 1 --branch 0.0.6 https://github.com/joular/joularcore.git
+#   git clone --depth 1 --branch 0.1.0 https://github.com/joular/cpuload.git
+#   git clone --depth 1 --branch 0.1.0 https://github.com/joular/joularcore.git
 #
 # Run from anywhere: packaging/freebsd.sh, or LIBS=<folder> packaging/freebsd.sh.
 # The package is for the FreeBSD version it's built on (pkg checks it).
@@ -35,7 +35,7 @@ fi
 # tar.gz
 TARBALL="$NAME-$VERSION-freebsd$RELEASE-$ARCH"
 mkdir -p "$WORK/$TARBALL"
-cp "bin/$NAME" data/carbon-intensity.csv "$WORK/$TARBALL/"
+cp "bin/$NAME" data/carbon-intensity.csv data/carbon-intensity-monthly.csv "$WORK/$TARBALL/"
 docs "$WORK/$TARBALL"
 tar -czf "$DIST/$TARBALL.tar.gz" -C "$WORK" "$TARBALL"
 
@@ -46,7 +46,7 @@ install -d "$STAGE/usr/local/bin" "$STAGE/usr/local/share/applications" \
 install -m 755 "bin/$NAME" "$STAGE/usr/local/bin/"
 install -m 644 "$HERE/$NAME.desktop" "$STAGE/usr/local/share/applications/"
 install -m 644 assets/icon.png "$STAGE/usr/local/share/icons/hicolor/512x512/apps/$NAME.png"
-install -m 644 data/carbon-intensity.csv "$STAGE/usr/local/share/$NAME/"
+install -m 644 data/carbon-intensity.csv data/carbon-intensity-monthly.csv "$STAGE/usr/local/share/$NAME/"
 docs "$STAGE/usr/local/share/doc/$NAME"
 
 cat > "$WORK/+MANIFEST" << EOF

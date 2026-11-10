@@ -56,3 +56,22 @@ char *fmt_span(char *buf, size_t n, double seconds)
 
     return buf;
 }
+
+/* Watts as a number and its unit: mW under 1 W, so a small figure never reads 0.0 */
+char *fmt_power(char *buf, size_t n, double watts, const char **unit)
+{
+    double milli = watts * 1000.0;
+
+    *unit = watts > 0.0 && watts < 0.9995 ? "mW" : "W";
+    if (watts <= 0.0)
+        snprintf(buf, n, "0");
+    else if (milli < 0.05)
+        snprintf(buf, n, "<0.1");
+    else if (milli < 9.95)
+        fmt_number(buf, n, milli, 1);
+    else if (watts < 0.9995)
+        fmt_number(buf, n, milli, 0);
+    else
+        fmt_number(buf, n, watts, 1);
+    return buf;
+}

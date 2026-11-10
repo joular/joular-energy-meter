@@ -14,6 +14,7 @@
  * and queues reports for the main loop to hand to the window. */
 
 #include <stdio.h>
+#include <string.h>
 
 #include <SDL2/SDL.h>
 
@@ -40,15 +41,21 @@ static struct {
     bool measuring, paused, quit;
     target followed;
     double interval;
+    char plug[4096];
 
     queued queue[QUEUE_SIZE];
     int first, count;
+    int dropped;   /* reports of this session lost since the last one delivered */
 } s;
 
 /* Under the lock */
 static void post(unsigned session, const report *r)
 {
     if (s.count == QUEUE_SIZE) {
+        const queued *oldest = &s.queue[s.first];
+
+        if (oldest->session == s.session && oldest->r.kind != REPORT_STARTED)
+            s.dropped++;
         s.first = (s.first + 1) % QUEUE_SIZE;
         s.count--;
     }
@@ -84,13 +91,16 @@ static int measure(void *unused)
         } else if (s.measuring && s.session != started) {
             report r = { .kind = REPORT_STARTED };
             target t = s.followed;
+            char plug[sizeof s.plug];
 
+            memcpy(plug, s.plug, sizeof plug);
             started = s.session;
             SDL_UnlockMutex(s.lock);
-            monitor_start(&t);
+            monitor_start(&t, plug);
             r.has_cpu = monitor_cpu_available();
             r.has_gpu = monitor_gpu_available();
             r.load_readable = monitor_load_readable();
+            r.ended = monitor_ended(&r.exit_code);
             snprintf(r.trouble, sizeof r.trouble, "%s", monitor_trouble());
             SDL_LockMutex(s.lock);
 
@@ -119,6 +129,7 @@ static int measure(void *unused)
             result = monitor_step(&r.data);
             r.taken = fmt_now();
             r.sum = monitor_session();
+            r.ended = monitor_ended(&r.exit_code);
             snprintf(r.trouble, sizeof r.trouble, "%s", monitor_trouble());
             SDL_LockMutex(s.lock);
 
@@ -181,6 +192,7 @@ void sampler_start(const target *t, double interval)
     s.interval = interval;
     s.measuring = true;
     s.paused = false;
+    s.dropped = 0;
     ask();
 }
 
@@ -198,6 +210,13 @@ void sampler_pause(bool paused)
     SDL_LockMutex(s.lock);
     s.paused = paused;
     ask();
+}
+
+void sampler_set_plug(const char *file)
+{
+    SDL_LockMutex(s.lock);
+    snprintf(s.plug, sizeof s.plug, "%s", file);
+    SDL_UnlockMutex(s.lock);
 }
 
 void sampler_set_interval(double interval)
@@ -223,6 +242,8 @@ void sampler_deliver(void)
 
             if (q->session == s.session) {
                 r = q->r;
+                r.dropped = s.dropped;
+                s.dropped = 0;
                 found = true;
             }
         }

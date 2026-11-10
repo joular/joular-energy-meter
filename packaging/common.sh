@@ -34,12 +34,13 @@ verify() {
     [ "$sum" = "$2" ] || { echo "$1 isn't the file expected, its SHA-256 is $sum" >&2; exit 1; }
 }
 
-# README and the licences: GPL, LVGL's MIT and Barlow's OFL
+# README and the licences: GPL, LVGL's MIT, Barlow's OFL and Lucide's ISC
 docs() {
     mkdir -p "$1"
     cp README.md LICENSE "$1/"
     cp lvgl/LICENCE.txt "$1/LICENCE-LVGL.txt"
     cp src/fonts/OFL.txt "$1/LICENCE-Barlow.txt"
+    cp src/fonts/LICENCE-Lucide.txt "$1/"
 }
 
 # --version and --help print before any window opens. The version must be alire.toml's.

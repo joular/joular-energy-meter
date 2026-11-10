@@ -27,18 +27,19 @@ typedef enum {
 
 /* Only lv_style_t members, theme.c inits it as an array */
 typedef struct theme_styles {
-    lv_style_t window, bar, status_bar;
-    lv_style_t plate, strip;
+    lv_style_t window, bar, track, tab, tab_chosen;
+    lv_style_t card, head, tile, rule_top;
     lv_style_t tone[TONE_COUNT];
     lv_style_t motion;
     lv_style_t key, key_hover, key_pressed, go, go_hover, go_pressed, halt, halt_hover, halt_pressed;
-    lv_style_t chosen, chosen_hover, chosen_pressed;
+    lv_style_t group, choice, choice_hover, chosen, chosen_hover;
     lv_style_t disabled, off, focus_ring;
     lv_style_t picker, picker_hover, picker_pressed;
     lv_style_t entry, entry_focused, entry_invalid, placeholder, cursor;
     lv_style_t switch_track, switch_on, knob;
     lv_style_t menu, menu_hover, menu_checked;
     lv_style_t lamp, alarm, message_new, message_trouble, link_hover;
+    lv_style_t popup, popup_row, popup_row_hover, popup_row_chosen;
     lv_style_t scrollbar;
 } theme_styles;
 

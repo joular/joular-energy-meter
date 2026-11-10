@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef PJ_WINDOWS
@@ -28,6 +29,7 @@
 #else
 #include <signal.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 #include "cpuload.h"
@@ -40,15 +42,24 @@ static bool has_cpu, has_gpu, load_reads;
 
 static bool running, paused;
 
-/* Set when the followed process ended: a reused PID is another program */
+/* Set when the followed process or command ended: a reused PID is another program */
 static bool gone;
+static int exit_code;   /* the command's, -1 until known */
 
-/* Baseline CPU sample for the next cycle, when it was taken, and how long the machine had slept */
-static cpuload_sample before;
+/* Baseline CPU samples for the next cycle (target, this meter), when they were taken, and how
+ * long the machine had slept */
+static cpuload_sample before, mine_before;
 static double taken_before, asleep_before;
 
 static totals consumed;
 static char trouble[128];
+
+/* The plug meter's file, followed from where it was read */
+static FILE *plug;
+static char plug_file[4096];
+static long plug_seen;          /* bytes read */
+static double plug_watts;       /* the last row's, UNREADABLE before one */
+static double plug_quiet;       /* seconds without a new row */
 
 /* Monotonic seconds that time a cycle: CLOCK_MONOTONIC on Linux and FreeBSD, CLOCK_UPTIME_RAW on
  * macOS (its CLOCK_MONOTONIC runs on through a sleep), the performance counter on Windows */
@@ -129,6 +140,76 @@ static bool absent(unsigned int pid)
 #endif
 }
 
+/* Only what is written from now on counts */
+static void plug_skip(void)
+{
+    if (fseek(plug, 0, SEEK_END) != 0 || (plug_seen = ftell(plug)) < 0) plug_seen = 0;
+}
+
+/* At the end: only what is written from now on counts. Opened later: all of it is new. */
+static void plug_open(bool at_end)
+{
+    if (plug_file[0] == '\0' || (plug = fopen(plug_file, "rb")) == NULL) return;
+    plug_seen = 0;
+    if (at_end) plug_skip();
+}
+
+static void plug_close(void)
+{
+    if (plug != NULL) fclose(plug);
+    plug = NULL;
+}
+
+/* "time;watts", "time,watts" or tab between them; a header or anything else isn't a row */
+static bool plug_row(const char *line, double *watts)
+{
+    char *end;
+
+    (void)strtod(line, &end);
+    if (end == line) return false;
+    while (*end == ' ') end++;
+    if (*end != ';' && *end != ',' && *end != '\t') return false;
+    line = end + 1;
+    *watts = strtod(line, &end);
+    return end != line && isfinite(*watts) && *watts >= 0.0;
+}
+
+/* The average of the rows written since the last call, else the last one until it is too old */
+static double plug_read(double elapsed)
+{
+    char line[256];
+    double watts, sum = 0.0;
+    int rows = 0;
+    long size;
+
+    if (plug == NULL) plug_open(false);
+    if (plug != NULL && fseek(plug, 0, SEEK_END) == 0 && (size = ftell(plug)) >= 0) {
+        /* Started again by the meter's program: from the top */
+        if (size < plug_seen) plug_seen = 0;
+        if (fseek(plug, plug_seen, SEEK_SET) == 0) {
+            while (fgets(line, sizeof line, plug) != NULL) {
+                size_t len = strlen(line);
+
+                /* A last line not finished yet waits for the next cycle; one too long is skipped */
+                if (line[len - 1] != '\n' && len < sizeof line - 1) break;
+                plug_seen += (long)len;
+                if (plug_row(line, &watts)) {
+                    sum += watts;
+                    rows++;
+                }
+            }
+        }
+        clearerr(plug);
+    }
+    if (rows > 0) {
+        plug_watts = sum / rows;
+        plug_quiet = 0.0;
+    } else {
+        plug_quiet += elapsed;
+    }
+    return plug_quiet < PLUG_STALE_SECONDS ? plug_watts : UNREADABLE;
+}
+
 /* Some hardware gives joules since the last read, some gives watts */
 static double watts(const joularcore_measurement *m, double over)
 {
@@ -141,15 +222,21 @@ static double watts(const joularcore_measurement *m, double over)
     return over > 0.0 ? m->value / over : 0.0;
 }
 
-/* Machine counters read once, target measured against the same sample */
-static void take_sample(cpuload_sample *out)
+/* Machine counters read once, target and this meter measured against the same sample */
+static void take_sample(cpuload_sample *out, cpuload_sample *mine)
 {
     cpuload_sample machine;
 
     cpuload_take_system(&machine);
+#ifdef PJ_WINDOWS
+    cpuload_take_pid_with((unsigned int)GetCurrentProcessId(), &machine, mine);
+#else
+    cpuload_take_pid_with((unsigned int)getpid(), &machine, mine);
+#endif
 
     switch (followed.kind) {
     case TARGET_PROCESS:
+    case TARGET_COMMAND:
         cpuload_take_pid_with(followed.pid, &machine, out);
         break;
     case TARGET_APPLICATION:
@@ -164,13 +251,13 @@ static void take_sample(cpuload_sample *out)
 /* Same order as monitor_step, so the CPU sample and the power reading cover the same time */
 static void take_baseline(joularcore_reading *reading)
 {
-    take_sample(&before);
+    take_sample(&before, &mine_before);
     taken_before = now();
     asleep_before = asleep();
     joularcore_read(reading);
 }
 
-void monitor_start(const target *t)
+void monitor_start(const target *t, const char *plug_csv)
 {
     joularcore_reading first;
 
@@ -179,12 +266,22 @@ void monitor_start(const target *t)
 
     followed = *t;
     gone = false;
+    exit_code = -1;
     consumed = (totals){0};
     trouble[0] = '\0';
+    snprintf(plug_file, sizeof plug_file, "%s", plug_csv);
+    plug_watts = UNREADABLE;
+    plug_quiet = 0.0;
+    plug_open(true);
 
     /* Doesn't fail from C, unreadable sources just show as not available */
     joularcore_open(1, 1);
+    /* Started right before the baseline, which misses only its first instants */
+    if (followed.kind == TARGET_COMMAND && !command_start(followed.command, &followed.pid, trouble, sizeof trouble))
+        gone = true;
     take_baseline(&first);
+    /* A new process starts with no CPU time: its first instants count too */
+    if (followed.kind == TARGET_COMMAND && !gone) before.used = 0;
 
     has_cpu = first.cpu.available != 0;
     has_gpu = first.gpu.available != 0;
@@ -200,6 +297,8 @@ void monitor_stop(void)
 {
     running = false;
     paused = false;
+    command_forget();
+    plug_close();
 
     /* Safe to call always, Joular Core knows if there's anything to release */
     joularcore_close();
@@ -222,6 +321,9 @@ void monitor_resume(void)
 
     paused = false;
     take_baseline(&discarded);
+    /* Rows written during the pause aren't the session's */
+    if (plug != NULL) plug_skip();
+    plug_quiet = 0.0;
 
     /* CPU time only grows, so less means the PID was reused */
     if (followed.kind == TARGET_PROCESS && before.used < paused_at.used)
@@ -230,9 +332,9 @@ void monitor_resume(void)
 
 step_result monitor_step(cycle *out)
 {
-    cpuload_sample previous = before, after;
+    cpuload_sample previous = before, after, mine_previous = mine_before, mine_after;
     joularcore_reading reading;
-    double taken_after, asleep_after, elapsed, slept;
+    double taken_after, asleep_after, elapsed, slept, mine;
 
     *out = (cycle){0};
 
@@ -241,7 +343,7 @@ step_result monitor_step(cycle *out)
 
     /* A reason only lasts until the next step */
     trouble[0] = '\0';
-    take_sample(&after);
+    take_sample(&after, &mine_after);
     taken_after = now();
     asleep_after = asleep();
 
@@ -260,6 +362,7 @@ step_result monitor_step(cycle *out)
 
     /* Next cycle's baseline, even if this one is dropped */
     before = after;
+    mine_before = mine_after;
     taken_before = taken_after;
     asleep_before = asleep_after;
 
@@ -267,11 +370,19 @@ step_result monitor_step(cycle *out)
         return STEP_SKIPPED;
 
     out->cpu_usage = cpuload_system_usage(&previous, &after);
+    mine = cpuload_process_usage(&mine_previous, &mine_after);
+    out->self_usage = mine < 0.0 ? UNREADABLE : mine;
     out->cpu_power = watts(&reading.cpu, elapsed);
     out->gpu_power = watts(&reading.gpu, elapsed);
     out->total_power = out->cpu_power + out->gpu_power;
 
     if (followed.kind != TARGET_WHOLE_SYSTEM) {
+        /* Ended in this cycle: its time until the end, read before it was reaped, still counts */
+        int64_t used_at_end = -1;
+        bool ending = followed.kind == TARGET_COMMAND && !gone && command_ended(&exit_code, &used_at_end);
+
+        if (ending && after.used < 0) after.used = used_at_end;
+
         /* Negative load means the target couldn't be read */
         out->target_usage = cpuload_process_usage(&previous, &after);
 
@@ -283,9 +394,10 @@ step_result monitor_step(cycle *out)
             gone = true;
         if (gone)
             out->target_usage = UNREADABLE;
-        else if (out->target_usage < 0.0)
-            snprintf(trouble, sizeof trouble, followed.kind == TARGET_PROCESS
-                     ? "it is running, but access is denied" : "access is denied");
+        else if (out->target_usage < 0.0 && !ending)
+            snprintf(trouble, sizeof trouble, followed.kind == TARGET_APPLICATION
+                     ? "access is denied" : "it is running, but access is denied");
+        if (ending) gone = true;
 
         if (out->target_usage >= 0.0) consumed.target_read = true;
         if (out->target_usage < 0.0) {
@@ -296,6 +408,13 @@ step_result monitor_step(cycle *out)
             out->target_power = fmin(out->cpu_power,
                                      out->cpu_power * out->target_usage / out->cpu_usage);
         }
+    }
+
+    out->plug_power = plug_file[0] ? plug_read(elapsed) : UNREADABLE;
+    if (out->plug_power >= 0.0) {
+        consumed.plug_energy += out->plug_power * elapsed;
+        consumed.plug_time += elapsed;
+        consumed.plug_read = true;
     }
 
     consumed.cpu_energy += out->cpu_power * elapsed;
@@ -333,4 +452,10 @@ totals monitor_session(void)
 const char *monitor_trouble(void)
 {
     return trouble;
+}
+
+bool monitor_ended(int *code)
+{
+    *code = exit_code;
+    return gone;
 }

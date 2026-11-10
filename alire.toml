@@ -23,8 +23,13 @@ executables = ["joularenergymeter"]
 disabled = true
 
 [[depends-on]]
-joularcore = "~0.0.6"
-cpuload = "~0.0.6"
+joularcore = "~0.1.0"
+cpuload = "~0.1.0"
+
+# Temporary: local checkouts until 0.1.0 is in the Alire index
+[[pins]]
+joularcore = { path = "../joularcore" }
+cpuload = { path = "../cpuload" }
 
 # System package: alr checks for it, offers to install it and points the compiler at it.
 # No FreeBSD package in Alire, use pkg install sdl2 there

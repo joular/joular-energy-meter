@@ -9,9 +9,9 @@
  * Author : Adel Noureddine
  */
 
-/* Top bar: target, interval, CSV recording, state lamp, Start/Stop and Pause.
- * Start validates the fields and passes the target to the display. While measuring, the
- * locked choices read as a sentence. */
+/* The What to measure card: target, interval, length, CSV recording; and the bar's lamp, state,
+ * Start/Stop and Pause. Start validates the fields and passes the target to the display. While
+ * measuring, the choices that can't change are locked. */
 
 #include <limits.h>
 #include <stdio.h>
@@ -21,17 +21,33 @@
 #include "app.h"
 #include "theme_private.h"
 
-LV_IMAGE_DECLARE(joular_logo_1x);
-LV_IMAGE_DECLARE(joular_logo_2x);
-
-/* Each line's choices are in a box, hidden while measuring for the sentence beside it */
-static lv_obj_t *what_choices, *kind_picker, *pid_entry, *app_entry, *interval_picker;
-static lv_obj_t *what_lead, *what_name;
-static lv_obj_t *record_choices, *record_switch, *path_entry, *browse_key, *recording_label;
-static lv_obj_t *lamp, *run_word, *run_time, *run_count, *run_key, *pause_key;
+/* The card's rows; the target's row names the field the kind needs */
+static lv_obj_t *kind_choices[4], *target_row, *pid_entry, *app_entry, *command_entry, *interval_picker;
+static lv_obj_t *length_picker, *record_switch, *path_entry, *browse_key;
+static target_kind kind = TARGET_WHOLE_SYSTEM;
+/* The bar: state, time, what is or will be measured, count */
+static lv_obj_t *lamp, *run_word, *run_time, *what_text, *run_count, *run_key, *pause_key;
+static bool ended;   /* idle with the last session's values shown */
 
 /* The banner shows a field error of ours, cleared by editing */
 static bool alarm_ours;
+
+/* The process ID typed, held for a zoom's rebuild only: never saved, it names another program
+ * at the next launch. What the sentence says while measuring, for the same. */
+static char held_pid[16];
+/* The last session's, from its Start */
+static target measured;
+
+/* Kept names of the target kinds, in target_kind order */
+static const char *const kinds[] = { "machine", "process", "application", "command" };
+
+/* Session lengths in seconds, as controls_length gives them; "until it ends" only for what can
+ * end. An application with no process left reads 0, as when idle, so it never ends. */
+static const int lengths[] = { 0, -1, 60, 300, 600, 1800, 3600 };
+static const char *const length_names[] = { "Until stopped", "Until it ends", "For 1 min", "For 5 min",
+                                             "For 10 min", "For 30 min", "For 1 h" };
+#define LENGTH_COUNT (sizeof lengths / sizeof *lengths)
+static int length;
 
 /* -------------------------------------------------------------------------------------- */
 
@@ -71,6 +87,7 @@ static void clear_problems(void)
     alarm_ours = false;
     kit_entry_set_invalid(pid_entry, false);
     kit_entry_set_invalid(app_entry, false);
+    kit_entry_set_invalid(command_entry, false);
     kit_entry_set_invalid(path_entry, false);
 }
 
@@ -82,61 +99,106 @@ static void show_problem(const char *text, lv_obj_t *field)
     ui_alarm(text, "", "");
     alarm_ours = true;
     kit_entry_set_invalid(field, true);
+    ui_show_page(PAGE_SETUP);
     lv_group_focus_obj(field);
+}
+
+static bool can_end(void)
+{
+    return kind == TARGET_PROCESS || kind == TARGET_COMMAND;
+}
+
+/* The options the kind allows, the chosen length kept if it is one of them */
+static void show_lengths(void)
+{
+    char options[128] = "";
+    uint32_t shown = 0, chosen = 0;
+
+    if (length < 0 && !can_end()) length = 0;
+    for (size_t i = 0; i < LENGTH_COUNT; i++) {
+        if (lengths[i] < 0 && !can_end()) continue;
+        if (lengths[i] == length) chosen = shown;
+        snprintf(options + strlen(options), sizeof options - strlen(options), "%s%s", shown ? "\n" : "",
+                 length_names[i]);
+        shown++;
+    }
+    lv_dropdown_set_options(length_picker, options);
+    lv_dropdown_set_selected(length_picker, chosen);
+}
+
+/* "application firefox, every 1 s, until stopped": what Start will measure, in the bar */
+static void show_summary(void)
+{
+    char what[200], every[16];
+    const char *name;
+    size_t n = sizeof what;
+
+    if (display_run() != RUN_IDLE || ended || what_text == NULL) return;
+    switch (kind) {
+    case TARGET_PROCESS:
+        name = lv_textarea_get_text(pid_entry);
+        snprintf(what, n, name[0] ? "to measure process %s" : "to measure a process: type its ID", name);
+        break;
+    case TARGET_APPLICATION:
+        name = lv_textarea_get_text(app_entry);
+        snprintf(what, n, name[0] ? "to measure application %.120s" : "to measure an application: type its name", name);
+        break;
+    case TARGET_COMMAND:
+        name = lv_textarea_get_text(command_entry);
+        snprintf(what, n, name[0] ? "to measure command %.120s" : "to measure a command: type it", name);
+        break;
+    default:
+        snprintf(what, n, "to measure the whole machine");
+        break;
+    }
+    lv_dropdown_get_selected_str(length_picker, every, sizeof every);
+    /* "Until stopped" -> "until stopped" */
+    every[0] = (char)(every[0] - 'A' + 'a');
+    snprintf(what + strlen(what), n - strlen(what), ", every %g s, %s%s", interval_seconds(chosen_interval()), every,
+             lv_obj_has_state(record_switch, LV_STATE_CHECKED) ? ", recorded" : "");
+    kit_set_text(what_text, what);
 }
 
 static void show_target_kind(void)
 {
-    uint32_t kind = lv_dropdown_get_selected(kind_picker);
+    static const char *const names[] = { "", "Process ID", "Application", "Command" };
+    static const char *const notes[] = {
+        "", "As the process list shows it", "Program name, such as firefox",
+        "Run at Start, children not counted",
+    };
 
+    for (int i = 0; i < 4; i++) lv_obj_set_state(kind_choices[i], LV_STATE_CHECKED, i == (int)kind);
+    kit_show(target_row, kind != TARGET_WHOLE_SYSTEM);
+    kit_set_text(kit_row_name(target_row), names[kind]);
+    kit_set_text(kit_row_note(target_row), notes[kind]);
     kit_show(pid_entry, kind == TARGET_PROCESS);
     kit_show(app_entry, kind == TARGET_APPLICATION);
+    kit_show(command_entry, kind == TARGET_COMMAND);
+    show_lengths();
     clear_problems();
+    show_summary();
 }
 
-/* Editable only when recording is on */
+/* Editable only when recording is on, and not while measuring */
 static void show_path_enabled(void)
 {
-    bool editable = lv_obj_has_state(record_switch, LV_STATE_CHECKED);
+    bool editable = lv_obj_has_state(record_switch, LV_STATE_CHECKED) && display_run() == RUN_IDLE;
 
     kit_enable(path_entry, editable);
     kit_enable(browse_key, editable);
 }
 
-static void show_recording(void)
+/* "application firefox, recording to power.csv" */
+static void show_what(void)
 {
-    const char *file = csv_recording_file();
-    char folder[PATH_MAX];
+    char text[1200];
+    size_t n = sizeof text;
 
-    if (!csv_is_recording())
-        kit_set_text(recording_label, "Not recording");
-    /* Can't resolve the folder, show the path as typed */
-    else if (!csv_folder_of(file, folder, sizeof folder))
-        lv_label_set_text_fmt(recording_label, "Recording to %s", file);
-    else
-        lv_label_set_text_fmt(recording_label, "Recording to %s in %s", csv_file_name(file), folder);
-}
-
-/* "Measuring application firefox", "Measuring process 2814", "Measuring the whole machine" */
-static void show_what(const target *measured)
-{
-    char pid[16];
-
-    switch (measured->kind) {
-    case TARGET_PROCESS:
-        snprintf(pid, sizeof pid, "%u", measured->pid);
-        kit_set_text(what_lead, "Measuring process");
-        kit_set_text(what_name, pid);
-        break;
-    case TARGET_APPLICATION:
-        kit_set_text(what_lead, "Measuring application");
-        kit_set_text(what_name, measured->app);
-        break;
-    case TARGET_WHOLE_SYSTEM:
-        kit_set_text(what_lead, "Measuring");
-        kit_set_text(what_name, "the whole machine");
-        break;
-    }
+    target_heading(&measured, text, n);
+    text[0] = (char)(text[0] - 'A' + 'a');
+    if (csv_is_recording())
+        snprintf(text + strlen(text), n - strlen(text), ", recording to %.300s", csv_file_name(csv_recording_file()));
+    kit_set_text(what_text, text);
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -145,7 +207,7 @@ static void show_what(const target *measured)
 static bool read_target(target *followed)
 {
     memset(followed, 0, sizeof *followed);
-    followed->kind = (target_kind)lv_dropdown_get_selected(kind_picker);
+    followed->kind = kind;
 
     switch (followed->kind) {
     case TARGET_PROCESS:
@@ -160,6 +222,21 @@ static bool read_target(target *followed)
             show_problem("Enter the application's name, such as firefox.", app_entry);
             return false;
         }
+        break;
+    case TARGET_COMMAND:
+        if (!trimmed(lv_textarea_get_text(command_entry), followed->command, sizeof followed->command)
+            || followed->command[0] == '\0') {
+            show_problem("Enter the command to run, such as python3 bench.py.", command_entry);
+            return false;
+        }
+#ifdef PJ_WINDOWS
+        /* No way back to the user's rights from here */
+        if (platform_privileged()) {
+            show_problem("As administrator, the command would run as administrator too. Start "
+                         JOULARENERGYMETER_NAME " without it to measure a command.", command_entry);
+            return false;
+        }
+#endif
         break;
     case TARGET_WHOLE_SYSTEM:
         break;
@@ -188,21 +265,41 @@ static void start_session(void)
     }
 
     clear_problems();
-    show_what(&followed);
-    show_recording();
+    measured = followed;
     display_start(&followed);
+    ui_show_page(PAGE_READINGS);
+    settings_save();
 }
 
 /* -------------------------------------------------------------------------------------- */
 
 /* Focus the matching field */
-static void on_kind_changed(lv_event_t *e)
+static void on_kind(lv_event_t *e)
 {
-    uint32_t kind = lv_dropdown_get_selected(kind_picker);
+    kind = (target_kind)(intptr_t)lv_event_get_user_data(e);
+    /* A command is mostly measured to its end */
+    if (kind == TARGET_COMMAND && length == 0) length = -1;
+    show_target_kind();
+    if (kind != TARGET_WHOLE_SYSTEM)
+        lv_group_focus_obj(kind == TARGET_PROCESS ? pid_entry : kind == TARGET_APPLICATION ? app_entry : command_entry);
+}
+
+/* Option back to its length, skipping "until it ends" when it isn't shown */
+static void on_length_changed(lv_event_t *e)
+{
+    uint32_t chosen = lv_dropdown_get_selected(length_picker), shown = 0;
 
     LV_UNUSED(e);
-    show_target_kind();
-    if (kind != TARGET_WHOLE_SYSTEM) lv_group_focus_obj(kind == TARGET_PROCESS ? pid_entry : app_entry);
+    for (size_t i = 0; i < LENGTH_COUNT; i++) {
+        if (lengths[i] < 0 && !can_end()) continue;
+        if (shown++ == chosen) length = lengths[i];
+    }
+    show_summary();
+}
+
+double controls_length(void)
+{
+    return length;
 }
 
 /* Clear the error as soon as the user types */
@@ -210,6 +307,7 @@ static void on_edited(lv_event_t *e)
 {
     LV_UNUSED(e);
     clear_problems();
+    show_summary();
 }
 
 static void on_interval_changed(lv_event_t *e)
@@ -221,6 +319,7 @@ static void on_interval_changed(lv_event_t *e)
     if (chosen == chosen_interval()) return;
     set_interval(chosen);
     display_interval_changed();
+    show_summary();
 }
 
 /* Sends VALUE_CHANGED, which clears the problems */
@@ -247,6 +346,7 @@ static void on_record_switched(lv_event_t *e)
     LV_UNUSED(e);
     show_path_enabled();
     clear_problems();
+    show_summary();
 }
 
 /* Start/Stop button, and Enter in a field */
@@ -260,9 +360,14 @@ static void on_run(lv_event_t *e)
     pressed = lv_tick_get();
 
     if (display_run() == RUN_IDLE)
-        start_session();
+        controls_start();
     else
         display_stop();
+}
+
+void controls_start(void)
+{
+    if (display_run() == RUN_IDLE) start_session();
 }
 
 static void on_pause(lv_event_t *e)
@@ -278,124 +383,144 @@ static lv_obj_t *field(lv_obj_t *parent, const char *placeholder, bool digits_on
 {
     lv_obj_t *made = kit_entry(parent, placeholder, digits_only);
 
+    /* 0: what the row leaves */
     lv_obj_set_width(made, ui_px(width));
+    if (width == 0) lv_obj_set_flex_grow(made, 1);
     lv_obj_add_event_cb(made, on_run, LV_EVENT_READY, NULL);
     lv_obj_add_event_cb(made, on_edited, LV_EVENT_VALUE_CHANGED, NULL);
     return made;
 }
 
-/* Clicking the label toggles the switch, like a desktop checkbox label */
-static void on_name_clicked(lv_event_t *e)
+/* Kind in the head, then a row each: the target's field, interval, length, recording */
+static void build_card(lv_obj_t *page)
 {
-    lv_obj_t *control = lv_event_get_user_data(e);
+    static const char *const names[] = { "Whole machine", "Process", "Application", "Command" };
+    lv_obj_t *card = kit_setup_card(page, LV_SYMBOL_EYE_OPEN, TOKEN_TILE_BLUE, "What to measure");
+    lv_obj_t *strip = kit_panel_strip(card), *track, *row, *controls;
 
-    if (lv_obj_has_state(control, LV_STATE_DISABLED)) return;
-    lv_obj_set_state(control, LV_STATE_CHECKED, !lv_obj_has_state(control, LV_STATE_CHECKED));
-    lv_obj_send_event(control, LV_EVENT_VALUE_CHANGED, NULL);
-}
+    lv_obj_set_flex_grow(kit_box(strip, false, 0), 1);
+    track = kit_choices(strip);
+    for (int i = 0; i < 4; i++)
+        kind_choices[i] = kit_choice(track, TOKEN_COUNT, names[i], on_kind, (void *)(intptr_t)i);
 
-/* "Measure [Whole machine] [2814] every [1 s]" */
-static void what_line(lv_obj_t *sentence)
-{
-    lv_obj_t *line = kit_box(sentence, false, 8);
-
-    kit_let_out(line, 4);
-    what_choices = kit_box(line, false, 8);
-    kit_let_out(what_choices, 4);
-    kit_label(what_choices, "Measure", TEXT_WORD);
-    kind_picker = kit_picker(what_choices, "Whole machine\nProcess\nApplication", TARGET_WHOLE_SYSTEM,
-                             on_kind_changed, NULL);
-    pid_entry = field(what_choices, "Process ID", true, 120);
+    target_row = kit_row(card, "", "");
+    controls = kit_row_controls(target_row);
+    pid_entry = field(controls, "Process ID", true, 140);
     lv_textarea_set_max_length(pid_entry, 10);
-    app_entry = field(what_choices, "Application name", false, 150);
+    app_entry = field(controls, "Application name, such as firefox", false, 320);
+    command_entry = field(controls, "Command to run, such as python3 bench.py", false, 0);
+    lv_textarea_set_max_length(command_entry, sizeof ((target *)0)->command - 1);
 
-    /* In their place while measuring, the name in ink, cut so the interval stays in view at
-     * the smallest window */
-    what_lead = kit_label(line, "", TEXT_WORD);
-    what_name = kit_lines(kit_label(line, "", TEXT_WORD), 1);
-    lv_obj_set_style_text_color(what_name, theme_color(TOKEN_TEXT), 0);
-    lv_obj_set_style_max_width(what_name, ui_px(140), 0);
-    kit_label(line, "every", TEXT_WORD);
-    interval_picker = kit_interval_picker(line, on_interval_changed, NULL);
+    row = kit_row(card, "Every", "Can change while measuring");
+    interval_picker = kit_interval_picker(kit_row_controls(row), on_interval_changed, NULL);
+
+    row = kit_row(card, "Length", "Pauses don't count");
+    /* Sized to the widest option; options set by show_lengths */
+    length_picker = kit_picker(kit_row_controls(row), "Until stopped\nUntil it ends", 0, on_length_changed, NULL);
+    kit_tip(length_picker, "How long to measure: until you press Stop, until the process or command ends, or for a"
+                           " set time. Pauses don't count.");
+
+    row = kit_row(card, "Record to a CSV file", "PowerJoular's columns");
+    controls = kit_row_controls(row);
+    record_switch = kit_switch(controls, on_record_switched, NULL);
+    kit_switch_label(kit_row_name(row), record_switch);
+    path_entry = field(controls, CSV_DEFAULT_FILE, false, 0);
+    browse_key = kit_button(controls, LV_SYMBOL_DIRECTORY, NULL, BUTTON_NORMAL, on_browse, NULL);
+    kit_tip(browse_key, "Choose the file to record to");
 }
 
-/* "(o) Record to [joularenergymeter-power.csv] [Browse]", or "Recording to ..." while
- * measuring */
-static void record_line(lv_obj_t *sentence)
+/* The interval kept, before its picker is made from chosen_interval */
+static void restore_interval(void)
 {
-    lv_obj_t *line = kit_box(sentence, false, 8), *name;
+    const char *every = settings_get("every");
 
+    for (int c = 0; every != NULL && c < INTERVAL_COUNT; c++)
+        if (interval_seconds((interval_choice)c) == atof(every)) set_interval((interval_choice)c);
+}
+
+/* The rest, once every field exists, as setting a text clears the fields' problems. Not the
+ * process ID: it names another program at the next launch. */
+static void restore_choices(void)
+{
+    const char *app = settings_get("application");
+    const char *command = settings_get("command"), *kept_length = settings_get("for");
+    const char *record = settings_get("record"), *path = settings_get("record_to");
+
+    kind = (target_kind)settings_index("measure", kinds, 4, kind);
+    for (size_t i = 0; kept_length != NULL && i < LENGTH_COUNT; i++)
+        if (atoi(kept_length) == lengths[i]) length = lengths[i];
+    if (app != NULL) lv_textarea_set_text(app_entry, app);
+    if (command != NULL) lv_textarea_set_text(command_entry, command);
+    if (held_pid[0]) lv_textarea_set_text(pid_entry, held_pid);
+    if (path != NULL) lv_textarea_set_text(path_entry, path);
+    if (record != NULL) lv_obj_set_state(record_switch, LV_STATE_CHECKED, strcmp(record, "yes") == 0);
+}
+
+void controls_keep(void)
+{
+    char number[16];
+
+    snprintf(held_pid, sizeof held_pid, "%s", lv_textarea_get_text(pid_entry));
+    settings_set("measure", kinds[kind]);
+    settings_set("application", lv_textarea_get_text(app_entry));
+    settings_set("command", lv_textarea_get_text(command_entry));
+    snprintf(number, sizeof number, "%d", length);
+    settings_set("for", number);
+    snprintf(number, sizeof number, "%g", interval_seconds(chosen_interval()));
+    settings_set("every", number);
+    settings_set("record", lv_obj_has_state(record_switch, LV_STATE_CHECKED) ? "yes" : "no");
+    settings_set("record_to", lv_textarea_get_text(path_entry));
+}
+
+void controls_create(lv_obj_t *page)
+{
+    /* Not the bar's yet */
+    what_text = NULL;
+    restore_interval();
+    build_card(page);
+    restore_choices();
+    show_target_kind();
+}
+
+lv_obj_t *controls_bar(lv_obj_t *bar)
+{
+    lv_obj_t *tile = kit_box(bar, false, 0), *words, *line;
+
+    /* The lamp on a tinted tile */
+    lv_obj_set_size(tile, ui_px(40), ui_px(40));
+    lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_radius(tile, ui_px(10), 0);
+    lv_obj_set_style_bg_color(tile, theme_color(TOKEN_ACCENT_SOFT), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lamp = kit_lamp(tile);
+
+    /* State, time and what is measured; under it the count and the messages */
+    words = kit_box(bar, true, 3);
+    lv_obj_set_width(words, 0);
+    lv_obj_set_flex_grow(words, 1);
+    line = kit_box(words, false, 10);
     lv_obj_set_width(line, LV_PCT(100));
-    kit_let_out(line, 4);
-    record_choices = kit_box(line, false, 8);
-    kit_let_out(record_choices, 4);
-    record_switch = kit_switch(record_choices, on_record_switched, NULL);
-    name = kit_label(record_choices, "Record to", TEXT_WORD);
-    lv_obj_set_clickable(name, true);
-    lv_obj_add_event_cb(name, on_name_clicked, LV_EVENT_CLICKED, record_switch);
-    path_entry = field(record_choices, CSV_DEFAULT_FILE, false, 220);
-    browse_key = kit_button(record_choices, NULL, "Browse", BUTTON_NORMAL, on_browse, NULL);
-    recording_label = kit_lines(kit_label(line, "", TEXT_WORD), 1);
-    lv_obj_set_width(recording_label, 0);
-    lv_obj_set_flex_grow(recording_label, 1);
-}
-
-lv_obj_t *controls_create(lv_obj_t *parent)
-{
-    lv_obj_t *bar = kit_box(parent, false, 20);
-    lv_obj_t *brand, *logo, *name, *sentence, *keys, *status, *line;
-
-    lv_obj_add_style(bar, &styles.bar, 0);
-    lv_obj_set_width(bar, LV_PCT(100));
-    lv_obj_set_style_pad_hor(bar, ui_px(UI_GUTTER + 4), 0);
-    lv_obj_set_style_pad_ver(bar, ui_px(10), 0);
-    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    kit_let_out(bar, 4);
-
-    /* Logo on top, "Energy Meter" below */
-    brand = kit_box(bar, true, 8);
-    logo = lv_image_create(brand);
-    lv_image_set_src(logo, platform_scale() > 1.25f ? &joular_logo_2x : &joular_logo_1x);
-    /* Stretch the closest bitmap to the exact size */
-    lv_obj_set_size(logo, ui_px(joular_logo_1x.header.w), ui_px(joular_logo_1x.header.h));
-    lv_image_set_inner_align(logo, LV_IMAGE_ALIGN_STRETCH);
-    lv_obj_set_style_margin_ver(logo, ui_px(3), 0);
-    name = kit_box(brand, false, 0);
-    lv_obj_set_height(name, ui_px(32));
-    kit_label(name, "Energy Meter", TEXT_TITLE);
-
-    sentence = kit_box(bar, true, 8);
-    lv_obj_set_width(sentence, 0);
-    lv_obj_set_flex_grow(sentence, 1);
-    kit_let_out(sentence, 4);
-    what_line(sentence);
-    record_line(sentence);
-
-    /* Lamp, state with the time and count under it, Pause (only while running), Start/Stop */
-    keys = kit_box(bar, false, 10);
-    lv_obj_set_height(keys, ui_px(32 + 8 + 32));
-    kit_let_out(keys, 4);
-    lamp = kit_lamp(keys);
-    status = kit_box(keys, true, 2);
-    lv_obj_set_style_margin_right(status, ui_px(8), 0);
-    line = kit_box(status, false, 8);
     run_word = kit_label(line, "", TEXT_TITLE);
     run_time = kit_label(line, "", TEXT_FIGURES);
-    /* Fixed width, so a new count doesn't resize the bar */
-    run_count = kit_lines(kit_label(status, "", TEXT_CAPTION), 1);
-    lv_obj_set_width(run_count, ui_px(190));
-    pause_key = kit_button(keys, LV_SYMBOL_PAUSE, "Pause", BUTTON_NORMAL, on_pause, NULL);
-    lv_obj_set_height(pause_key, ui_px(40));
-    run_key = kit_button(keys, LV_SYMBOL_PLAY, "Start", BUTTON_GO, on_run, NULL);
-    lv_obj_set_size(run_key, ui_px(116), ui_px(40));
-    lv_obj_set_style_text_font(run_key, ui_font(16), 0);
+    lv_obj_set_style_text_color(run_time, theme_color(TOKEN_TEXT), 0);
+    what_text = kit_lines(kit_label(line, "", TEXT_WORD), 1);
+    lv_obj_set_width(what_text, 0);
+    lv_obj_set_flex_grow(what_text, 1);
+    line = kit_box(words, false, 10);
+    lv_obj_set_width(line, LV_PCT(100));
+    run_count = kit_lines(kit_label(line, "", TEXT_CAPTION), 1);
 
-    show_target_kind();
-    show_path_enabled();
-    controls_show_run(RUN_IDLE, false);
+    pause_key = kit_button(bar, LV_SYMBOL_PAUSE, "Pause", BUTTON_NORMAL, on_pause, NULL);
+    lv_obj_set_height(pause_key, ui_px(44));
+    lv_obj_set_style_radius(pause_key, ui_px(12), 0);
+    run_key = kit_button(bar, LV_SYMBOL_PLAY, "Start", BUTTON_GO, on_run, NULL);
+    lv_obj_set_size(run_key, ui_px(124), ui_px(44));
+    lv_obj_set_style_text_font(run_key, ui_bold(16), 0);
+
+    /* Its state comes with the display's (display_create) */
     /* So Enter starts right away; no ring until the keyboard moves focus */
     lv_group_focus_obj(run_key);
-    return bar;
+    return line;
 }
 
 void controls_show_run(run_state run, bool stopped)
@@ -409,6 +534,7 @@ void controls_show_run(run_state run, bool stopped)
     bool idle = run == RUN_IDLE, paused = run == RUN_PAUSED;
     bool counted = stopped || run == RUN_LIVE || paused;
 
+    ended = stopped;
     kit_lamp_set(lamp, looks[run].color, looks[run].lit);
     kit_set_text(run_word, stopped ? "Stopped" : looks[run].word);
     kit_show(run_time, counted);
@@ -420,12 +546,15 @@ void controls_show_run(run_state run, bool stopped)
                    BUTTON_NORMAL);
     kit_show(pause_key, run == RUN_LIVE || paused);
 
-    /* Choices while idle, a sentence of what is measured while a session runs */
-    kit_show(what_choices, idle);
-    kit_show(what_lead, !idle);
-    kit_show(what_name, !idle);
-    kit_show(record_choices, idle);
-    kit_show(recording_label, !idle);
+    /* What is measured is locked while a session runs; the interval and length are not */
+    for (int i = 0; i < 4; i++) kit_enable(kind_choices[i], idle);
+    kit_enable(pid_entry, idle);
+    kit_enable(app_entry, idle);
+    kit_enable(command_entry, idle);
+    kit_enable(record_switch, idle);
+    show_path_enabled();
+    if (idle && !stopped) show_summary();
+    else show_what();
 }
 
 void controls_show_progress(double elapsed, int samples, int missed)

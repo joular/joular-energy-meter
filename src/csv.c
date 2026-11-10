@@ -53,24 +53,23 @@ static bool cannot_write(const char *name)
 
 #ifdef PJ_WINDOWS
 /* Paths are UTF-8, the ANSI calls would read them in the local code page */
-static bool wide(const char *path, wchar_t *out, int n)
+bool wide(const char *path, wchar_t *out, int n)
 {
     return MultiByteToWideChar(CP_UTF8, 0, path, -1, out, n) > 0;
 }
-
-/* Absolute path, NULL if it can't be resolved */
-static wchar_t *full_path(const char *path, wchar_t *out, int n)
+#else
+bool sudo_user(uid_t *uid, gid_t *gid)
 {
-    wchar_t w[PATH_MAX];
+    const char *u = getenv("SUDO_UID"), *g = getenv("SUDO_GID");
 
-    return wide(path, w, PATH_MAX) ? _wfullpath(out, w, (size_t)n) : NULL;
+    if (geteuid() != 0 || u == NULL || g == NULL || atol(u) <= 0) return false;
+    *uid = (uid_t)atol(u);
+    *gid = (gid_t)atol(g);
+    return true;
 }
 #endif
 
-/* Opens name to append to it. Runs as root, so only write to a regular file with a single
- * link, never through a symlink that could point anywhere. Files created under sudo are
- * chowned to SUDO_UID/SUDO_GID. */
-static FILE *open_csv(const char *name)
+FILE *open_user_file(const char *name, bool append)
 {
 #ifdef PJ_WINDOWS
     wchar_t w[PATH_MAX];
@@ -79,12 +78,14 @@ static FILE *open_csv(const char *name)
         errno = ENAMETOOLONG;
         return NULL;
     }
-    return _wfopen(w, L"a");
+    return _wfopen(w, append ? L"a" : L"w");
 #else
-    int flags = O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
+    /* No O_TRUNC: it would empty a hard-linked file before the checks below */
+    int flags = O_WRONLY | (append ? O_APPEND : 0) | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
     int fd = open(name, flags | O_CREAT | O_EXCL, 0644);
     bool created = fd >= 0;
-    const char *uid = getenv("SUDO_UID"), *gid = getenv("SUDO_GID");
+    uid_t uid;
+    gid_t gid;
     struct stat st;
     FILE *f = NULL;
 
@@ -95,8 +96,8 @@ static FILE *open_csv(const char *name)
 
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1)
         errno = ELOOP;   /* reported as a link */
-    else
-        f = fdopen(fd, "a");
+    else if (append || ftruncate(fd, 0) == 0)
+        f = fdopen(fd, append ? "a" : "w");
 
     if (f == NULL) {
         int reason = errno;
@@ -106,16 +107,28 @@ static FILE *open_csv(const char *name)
         return NULL;
     }
 
-    if (created && geteuid() == 0 && uid != NULL && gid != NULL)
-        (void)!fchown(fd, (uid_t)atol(uid), (gid_t)atol(gid));
+    if (created && sudo_user(&uid, &gid)) (void)!fchown(fd, uid, gid);
     return f;
 #endif
 }
 
+/* Goes into a file name, so replace path separators and characters Windows rejects */
+static void file_safe(const char *name, size_t len, char *out, size_t n)
+{
+    size_t i;
+
+    for (i = 0; i < n - 1 && i < len && name[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)name[i];
+
+        out[i] = (c < 32 || strchr("/\\:*?\"<>|", c) != NULL) ? '_' : (char)c;
+    }
+    out[i] = '\0';
+}
+
 const char *csv_target_file(const char *system_file, const target *t, char *out, size_t n)
 {
-    char app[sizeof t->app];
-    size_t i;
+    char name[sizeof t->app];
+    const char *first, *end;
     size_t stem = strlen(system_file);
 
     /* power.csv gives power-144.csv: the name goes before a final .csv, as in PowerJoular */
@@ -128,14 +141,18 @@ const char *csv_target_file(const char *system_file, const target *t, char *out,
         break;
 
     case TARGET_APPLICATION:
-        /* Goes into a file name, so replace path separators and characters Windows rejects */
-        for (i = 0; i < sizeof app - 1 && t->app[i] != '\0'; i++) {
-            unsigned char c = (unsigned char)t->app[i];
+        file_safe(t->app, sizeof name, name, sizeof name);
+        snprintf(out, n, "%.*s-%s.csv", (int)stem, system_file, name);
+        break;
 
-            app[i] = (c < 32 || strchr("/\\:*?\"<>|", c) != NULL) ? '_' : (char)c;
-        }
-        app[i] = '\0';
-        snprintf(out, n, "%.*s-%s.csv", (int)stem, system_file, app);
+    case TARGET_COMMAND:
+        /* The program's name: its first word, without its folder */
+        first = t->command + strspn(t->command, " ");
+        end = first + strcspn(first, " ");
+        for (const char *c = first; c < end; c++)
+            if (*c == '/' || *c == '\\') first = c + 1;
+        file_safe(first, (size_t)(end - first), name, sizeof name);
+        snprintf(out, n, "%.*s-%s.csv", (int)stem, system_file, name);
         break;
 
     default:
@@ -177,7 +194,7 @@ static bool write_line(FILE *f, const char *line)
 /* Opens the file for the session's rows, with the header first if it is new or empty */
 static FILE *open_rows(const char *name, const char *header)
 {
-    FILE *f = open_csv(name);
+    FILE *f = open_user_file(name, true);
 
     if (f != NULL && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0 && !write_line(f, header)) {
         int reason = errno;
@@ -266,24 +283,3 @@ const char *csv_file_name(const char *path)
     return slash ? slash + 1 : path;
 }
 
-bool csv_folder_of(const char *file, char *out, size_t n)
-{
-    size_t len, root = 1;
-#ifdef PJ_WINDOWS
-    wchar_t w[PATH_MAX];
-    char full[3 * PATH_MAX];   /* up to 3 UTF-8 bytes per UTF-16 unit */
-
-    if (full_path(file, w, PATH_MAX) == NULL
-        || WideCharToMultiByte(CP_UTF8, 0, w, -1, full, (int)sizeof full, NULL, NULL) <= 0) return false;
-    if (full[1] == ':') root = 3;   /* C:\ */
-#else
-    char full[PATH_MAX];
-
-    if (realpath(file, full) == NULL) return false;
-#endif
-    len = (size_t)(csv_file_name(full) - full);
-    /* Drop the trailing separator unless it's the root */
-    if (len > root) len--;
-    snprintf(out, n, "%.*s", (int)len, full);
-    return true;
-}

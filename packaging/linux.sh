@@ -42,17 +42,19 @@ install -D -m 755 "bin/$NAME" "$STAGE/usr/bin/$NAME"
 install -D -m 644 "$HERE/$NAME.desktop" "$STAGE/usr/share/applications/$NAME.desktop"
 install -D -m 644 assets/icon.png "$STAGE/usr/share/icons/hicolor/512x512/apps/$NAME.png"
 install -D -m 644 data/carbon-intensity.csv "$STAGE/usr/share/$NAME/carbon-intensity.csv"
+install -D -m 644 data/carbon-intensity-monthly.csv "$STAGE/usr/share/$NAME/carbon-intensity-monthly.csv"
 docs "$STAGE/usr/share/doc/$NAME"
 SIZE_KB=$(du -sk "$STAGE" | cut -f1)
 
 # tar.gz (keeps the executable bit, which zip files lose)
 TARBALL="$NAME-$VERSION-linux-$ARCH-glibc$GLIBC"
 mkdir -p "$WORK/$TARBALL"
-cp "bin/$NAME" data/carbon-intensity.csv "$WORK/$TARBALL/"
+cp "bin/$NAME" data/carbon-intensity.csv data/carbon-intensity-monthly.csv "$WORK/$TARBALL/"
 docs "$WORK/$TARBALL"
 tar -czf "$DIST/$TARBALL.tar.gz" -C "$WORK" "$TARBALL"
 
-# .deb: libsdl2-2.0-0 is SDL2 (or sdl2-compat) on Debian and Ubuntu
+# .deb: libsdl2-2.0-0 is SDL2 (or sdl2-compat) on Debian and Ubuntu. pkexec, for Allow reading
+# power, is its own package from Debian 12 and Ubuntu 23.10, in policykit-1 before.
 mkdir -p "$WORK/deb"
 cp -R "$STAGE/." "$WORK/deb/"
 mkdir -p "$WORK/deb/DEBIAN"
@@ -63,6 +65,7 @@ Architecture: $DEB_ARCH
 Maintainer: $MAINTAINER
 Installed-Size: $SIZE_KB
 Depends: libc6 (>= $GLIBC), libsdl2-2.0-0 (>= 2.0.18)
+Recommends: pkexec | policykit-1
 Section: utils
 Priority: optional
 Homepage: $WEBSITE
@@ -80,6 +83,8 @@ Release: 1
 Summary: $SUMMARY
 License: GPL-3.0-only
 URL: $WEBSITE
+# pkexec, for Allow reading power
+Recommends: polkit
 
 # Already built: no debug package, no stripping
 %global debug_package %{nil}
@@ -129,6 +134,7 @@ arch = $ARCH
 license = GPL-3.0-only
 depend = glibc
 depend = sdl2
+optdepend = polkit: Allow reading power without sudo
 EOF
 (
     cd "$WORK/arch"
@@ -151,6 +157,7 @@ if [ ! -x "$LINUXDEPLOY" ]; then
 fi
 cp assets/icon.png "$WORK/$NAME.png"
 install -D -m 644 data/carbon-intensity.csv "$WORK/AppDir/usr/share/$NAME/carbon-intensity.csv"
+install -D -m 644 data/carbon-intensity-monthly.csv "$WORK/AppDir/usr/share/$NAME/carbon-intensity-monthly.csv"
 (
     cd "$WORK"
     APPIMAGE_EXTRACT_AND_RUN=1 LINUXDEPLOY_OUTPUT_VERSION="$VERSION" "$LINUXDEPLOY" \

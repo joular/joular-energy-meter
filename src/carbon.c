@@ -28,11 +28,21 @@
 
 /* data/carbon-intensity.csv, built in by data/update.py */
 extern const char carbon_builtin[];
+extern const char carbon_monthly_builtin[];
 
 #define MAX_COUNTRIES 300
 
 static electricity countries[MAX_COUNTRIES];
 static int country_count;
+
+/* Each calendar month of a country, from the latest year Ember has it; used with all twelve */
+static struct {
+    char code[4];
+    int year[12];
+    double grams[12];
+    unsigned filled;   /* a bit per month */
+} months[MAX_COUNTRIES];
+static int month_count;
 
 /* Life-cycle medians of the IPCC (AR5 WG3 Annex III), which Ember uses too. Oil is Ember's
  * figure for oil and other fossil fuels. */
@@ -71,6 +81,42 @@ static bool parse_row(char *line, electricity *e)
     return true;
 }
 
+/* "code,year,month,grams", code "" for the world */
+static bool parse_month(char *line)
+{
+    char *year, *month, *grams, *end;
+    int y, m, i;
+    double g;
+
+    line[strcspn(line, "\r")] = '\0';
+    if ((year = strchr(line, ',')) == NULL) return false;
+    *year++ = '\0';
+    if ((month = strchr(year, ',')) == NULL) return false;
+    *month++ = '\0';
+    if ((grams = strchr(month, ',')) == NULL) return false;
+    *grams++ = '\0';
+    y = (int)strtol(year, &end, 10);
+    if (end == year || *end != '\0' || y <= 0) return false;
+    m = (int)strtol(month, &end, 10);
+    if (end == month || *end != '\0' || m < 1 || m > 12) return false;
+    g = strtod(grams, &end);
+    if (end == grams || *end != '\0' || !(g >= 0.0 && g < 10000.0) || strlen(line) >= sizeof months[0].code)
+        return false;
+
+    for (i = 0; i < month_count && strcmp(months[i].code, line) != 0; i++)
+        ;
+    if (i == MAX_COUNTRIES) return false;
+    if (i == month_count) {
+        memset(&months[i], 0, sizeof months[i]);
+        strcpy(months[i].code, line);
+        month_count++;
+    }
+    months[i].year[m - 1] = y;
+    months[i].grams[m - 1] = g;
+    months[i].filled |= 1u << (m - 1);
+    return true;
+}
+
 /* Rows that don't parse, such as the header, are skipped. Returns the count read. */
 static int parse(char *text)
 {
@@ -79,6 +125,15 @@ static int parse(char *text)
     for (char *line = strtok(text, "\n"); line && count < MAX_COUNTRIES; line = strtok(NULL, "\n"))
         if (parse_row(line, &countries[count])) count++;
     return count;
+}
+
+/* Monthly rows; returns how many were read */
+static int parse_months(char *text)
+{
+    int read = 0;
+
+    for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) read += parse_month(line);
+    return read;
 }
 
 /* Whole file into text, false if missing or too big. SDL takes the UTF-8 path on Windows too,
@@ -99,6 +154,7 @@ void carbon_load(void)
     static const char *const places[] = { "", "../share/joularenergymeter/" };
     static char text[64 * 1024];
     char path[4096];
+    int read = 0;
 
     for (size_t i = 0; i < sizeof places / sizeof *places && country_count == 0; i++) {
         snprintf(path, sizeof path, "%s%s" CARBON_FILE, platform_program_folder(), places[i]);
@@ -109,6 +165,29 @@ void carbon_load(void)
         snprintf(text, sizeof text, "%s", carbon_builtin);
         country_count = parse(text);
     }
+
+    /* The same for the months, kept apart as names may hold commas */
+    for (size_t i = 0; i < sizeof places / sizeof *places && read == 0; i++) {
+        snprintf(path, sizeof path, "%s%s" CARBON_MONTHLY_FILE, platform_program_folder(), places[i]);
+        if (read_file(path, text, sizeof text)) read = parse_months(text);
+    }
+    if (read == 0) {
+        snprintf(text, sizeof text, "%s", carbon_monthly_builtin);
+        parse_months(text);
+    }
+}
+
+bool carbon_month(const electricity *e, int month, int *year, double *grams)
+{
+    /* Countries and the world have a year, energy sources don't */
+    if (e == NULL || e->year <= 0 || month < 1 || month > 12) return false;
+    for (int i = 0; i < month_count; i++)
+        if (strcmp(months[i].code, e->code) == 0 && months[i].filled == 0xFFFu) {
+            *year = months[i].year[month - 1];
+            *grams = months[i].grams[month - 1];
+            return true;
+        }
+    return false;
 }
 
 int carbon_country_count(void)

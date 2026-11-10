@@ -71,9 +71,10 @@ foreach ($File in "bin\$Name.exe", 'bin\SDL2.dll') {
 # zip
 $Package = Join-Path $Work "$Name-$Version-windows-x64"
 New-Item -ItemType Directory -Force $Package | Out-Null
-Copy-Item "bin\$Name.exe", 'bin\SDL2.dll', 'bin\README-SDL.txt', 'data\carbon-intensity.csv', 'README.md', 'LICENSE' $Package
+Copy-Item "bin\$Name.exe", 'bin\SDL2.dll', 'bin\README-SDL.txt', 'data\carbon-intensity.csv', 'data\carbon-intensity-monthly.csv', 'README.md', 'LICENSE' $Package
 Copy-Item 'lvgl\LICENCE.txt' "$Package\LICENCE-LVGL.txt"
 Copy-Item 'src\fonts\OFL.txt' "$Package\LICENCE-Barlow.txt"
+Copy-Item 'src\fonts\LICENCE-Lucide.txt' $Package
 Compress-Archive -Force -Path $Package -DestinationPath "$Dist\$Name-$Version-windows-x64.zip"
 
 # MSI, from the same files

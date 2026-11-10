@@ -22,8 +22,21 @@ const char *target_name(const target *t, char *buf, size_t n)
     if (t->kind == TARGET_PROCESS)
         snprintf(buf, n, "Process %u", t->pid);
     else
-        snprintf(buf, n, "%s", t->kind == TARGET_APPLICATION ? t->app : "");
+        snprintf(buf, n, "%s", t->kind == TARGET_APPLICATION ? t->app : t->kind == TARGET_COMMAND ? t->command : "");
 
+    return buf;
+}
+
+const char *target_heading(const target *t, char *buf, size_t n)
+{
+    if (t->kind == TARGET_PROCESS)
+        snprintf(buf, n, "Process %u", t->pid);
+    else if (t->kind == TARGET_APPLICATION)
+        snprintf(buf, n, "Application %s", t->app);
+    else if (t->kind == TARGET_COMMAND)
+        snprintf(buf, n, "Command %s", t->command);
+    else
+        snprintf(buf, n, "Whole machine");
     return buf;
 }
 
